@@ -53,7 +53,9 @@ Makefile
 .vscode/
 .agents/
 
-# Logs & temp
+# Logs & temp & dist
+dist/
+*.zip
 *.log
 tmp/
 scratch/
