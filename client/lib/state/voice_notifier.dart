@@ -5,6 +5,7 @@ import '../services/voice_client.dart';
 import '../services/websocket_service.dart';
 import 'auth_notifier.dart';
 import 'channels_notifier.dart';
+import 'settings_notifier.dart';
 
 enum VoiceConnectionStatus { disconnected, connecting, connected }
 
@@ -173,8 +174,12 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
     });
   }
 
-  Future<void> joinVoice(int channelId, String channelName, {String host = '127.0.0.1'}) async {
+  Future<void> joinVoice(int channelId, String channelName, {String? host}) async {
     if (state.connectedChannelId == channelId && state.isConnected) return;
+
+    final targetHost = (host != null && host.isNotEmpty)
+        ? host
+        : _ref.read(settingsProvider).serverHost;
 
     state = state.copyWith(
       status: VoiceConnectionStatus.connecting,
@@ -197,7 +202,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
 
       if (user != null) {
         await _voiceClient.connect(
-          host: host,
+          host: targetHost,
           port: udpPort,
           userId: user.id,
           channelId: channelId,

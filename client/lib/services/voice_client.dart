@@ -149,10 +149,12 @@ class VoiceClient {
   }) async {
     await disconnect();
 
-    _userId = userId;
-    _channelId = channelId;
-    _serverPort = port;
-    _serverAddress = (await InternetAddress.lookup(host)).first;
+    final parsed = InternetAddress.tryParse(host);
+    if (parsed != null) {
+      _serverAddress = parsed;
+    } else {
+      _serverAddress = (await InternetAddress.lookup(host)).first;
+    }
 
     _socket = await RawDatagramSocket.bind(InternetAddress.anyIPv4, 0);
     _isConnected = true;
@@ -166,7 +168,7 @@ class VoiceClient {
       }
     });
 
-    // Send Handshake (Type 0x04)
+    // Send Handshake (Type 0x04) with burst for UDP delivery guarantee
     final tokenBytes = utf8.encode(udpToken);
     final handshakePacket = VoicePacket(
       type: AppConstants.packetTypeHandshake,
@@ -177,6 +179,12 @@ class VoiceClient {
       payload: Uint8List.fromList(tokenBytes),
     );
     sendPacket(handshakePacket);
+    Future.delayed(const Duration(milliseconds: 80), () {
+      if (_isConnected) sendPacket(handshakePacket);
+    });
+    Future.delayed(const Duration(milliseconds: 250), () {
+      if (_isConnected) sendPacket(handshakePacket);
+    });
 
     _startPingProbe();
   }
@@ -276,6 +284,9 @@ class VoiceClient {
 
   Future<void> disconnect() async {
     _isConnected = false;
+    _userId = 0;
+    _channelId = 0;
+    _serverPort = AppConstants.defaultUdpPort;
     _pingTimer?.cancel();
     _pingTimer = null;
     _pingSendTimes.clear();
