@@ -73,13 +73,13 @@ echo "[+] Starting services with Docker Compose..."
 $DOCKER_COMPOSE_CMD up -d --build
 
 # 5. Wait for backend healthcheck
-echo "[+] Waiting for healthcheck probe on http://127.0.0.1:8080/health..."
+echo "[+] Waiting for healthcheck probe on http://127.0.0.1:8085/health..."
 MAX_RETRIES=30
 COUNT=0
 HEALTHY=false
 
 while [ $COUNT -lt $MAX_RETRIES ]; do
-    if curl -s -f http://127.0.0.1:8080/health >/dev/null 2>&1; then
+    if curl -s -f http://127.0.0.1:8085/health >/dev/null 2>&1; then
         HEALTHY=true
         break
     fi
@@ -100,7 +100,7 @@ echo ""
 echo "===================================================================="
 echo "  DEPLOYMENT SUCCESSFUL"
 echo "===================================================================="
-echo "  HTTP/WebSocket Control Plane:  ws://0.0.0.0:8080/ws"
+echo "  HTTP/WebSocket Control Plane:  ws://0.0.0.0:8085/ws"
 echo "  UDP Voice SFU Audio Plane:     0.0.0.0:7878/udp"
 echo "  Persistent Storage Directory:  ${DATA_DIR}"
 
@@ -108,7 +108,7 @@ if command -v tailscale >/dev/null 2>&1; then
     TS_IP=$(tailscale ip -4 2>/dev/null || echo "")
     if [ -n "$TS_IP" ]; then
         echo "  Tailscale Mesh IP:             ${TS_IP}"
-        echo "  Tailscale WebSocket URL:       ws://${TS_IP}:8080/ws"
+        echo "  Tailscale WebSocket URL:       ws://${TS_IP}:8085/ws"
         echo "  Tailscale Voice UDP:           ${TS_IP}:7878/udp"
     fi
 fi

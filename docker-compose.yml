@@ -7,18 +7,18 @@ services:
     restart: unless-stopped
     ports:
       # HTTP / WebSocket Control Plane (JSON-RPC)
-      - "8080:8080/tcp"
+      - "8085:8085/tcp"
       # Ultra-Low-Latency UDP Voice SFU Plane
       - "7878:7878/udp"
     volumes:
       # Persistent SQLite WAL database and configuration
       - ./data:/app/data
     environment:
-      - PORT=8080
+      - PORT=8085
       - UDP_PORT=7878
       - DB_PATH=/app/data/voiceapp.db
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8085/health || exit 1"]
       interval: 15s
       timeout: 3s
       retries: 3
