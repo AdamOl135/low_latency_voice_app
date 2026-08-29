@@ -25,6 +25,7 @@ target_include_directories(voice_engine PUBLIC
 
 if (WIN32)
     target_compile_definitions(voice_engine PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(voice_engine PRIVATE winmm)
     set_target_properties(voice_engine PROPERTIES
         OUTPUT_NAME "voice_engine"
         PREFIX ""

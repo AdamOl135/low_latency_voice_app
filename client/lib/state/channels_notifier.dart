@@ -68,6 +68,18 @@ class ChannelsNotifier extends StateNotifier<ChannelsState> {
 
   ChannelsNotifier(this._ws) : super(const ChannelsState()) {
     _listenToEvents();
+    _listenToConnection();
+  }
+
+  void _listenToConnection() {
+    _ws.statusStream.listen((status) {
+      if (status == WsConnectionStatus.authenticated || status == WsConnectionStatus.connected) {
+        fetchChannels();
+      }
+    });
+    if (_ws.status == WsConnectionStatus.authenticated || _ws.status == WsConnectionStatus.connected) {
+      fetchChannels();
+    }
   }
 
   void _listenToEvents() {
@@ -77,10 +89,18 @@ class ChannelsNotifier extends StateNotifier<ChannelsState> {
 
       if (eventType == 'channel_created') {
         final chData = data['channel'] ?? data;
-        final newChannel = Channel.fromJson(Map<String, dynamic>.from(chData as Map));
-        state = state.copyWith(
-          channels: [...state.channels.where((c) => c.id != newChannel.id), newChannel],
-        );
+        if (chData is Map) {
+          final newChannel = Channel.fromJson(Map<String, dynamic>.from(chData));
+          final updated = [...state.channels.where((c) => c.id != newChannel.id), newChannel];
+          int? selectedText = state.selectedTextChannelId;
+          if (selectedText == null && newChannel.isText) {
+            selectedText = newChannel.id;
+          }
+          state = state.copyWith(
+            channels: updated,
+            selectedTextChannelId: selectedText,
+          );
+        }
       } else if (eventType == 'channel_deleted') {
         final channelId = data['channel_id'] as int?;
         if (channelId != null) {
@@ -131,11 +151,18 @@ class ChannelsNotifier extends StateNotifier<ChannelsState> {
     state = state.copyWith(isLoading: true, errorMessage: null);
     try {
       final res = await _ws.getChannels();
-      final listData = (res['data'] is Map && res['data']['channels'] is List)
-          ? res['data']['channels'] as List
-          : (res['result'] is Map && res['result']['channels'] is List
-              ? res['result']['channels'] as List
-              : (res['channels'] is List ? res['channels'] as List : []));
+      List listData = [];
+      if (res['data'] is Map && res['data']['channels'] is List) {
+        listData = res['data']['channels'] as List;
+      } else if (res['result'] is Map && res['result']['channels'] is List) {
+        listData = res['result']['channels'] as List;
+      } else if (res['channels'] is List) {
+        listData = res['channels'] as List;
+      } else if (res['data'] is List) {
+        listData = res['data'] as List;
+      } else if (res['result'] is List) {
+        listData = res['result'] as List;
+      }
 
       final channels = listData.map((e) => Channel.fromJson(Map<String, dynamic>.from(e as Map))).toList();
 

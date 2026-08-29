@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -6,6 +7,8 @@ import '../models/audio_device.dart';
 import '../services/audio_engine.dart';
 import '../services/ptt_service.dart';
 import '../services/vad_service.dart';
+import '../services/websocket_service.dart';
+import 'auth_notifier.dart';
 import 'voice_notifier.dart';
 
 class SettingsState {
@@ -19,6 +22,9 @@ class SettingsState {
   final String serverHost;
   final int serverWsPort;
   final int serverUdpPort;
+  final bool isTestingMic;
+  final double micTestInputLevelDb;
+  final bool isMicSpeaking;
 
   const SettingsState({
     this.inputDevices = const [],
@@ -31,6 +37,9 @@ class SettingsState {
     this.serverHost = AppConstants.defaultHost,
     this.serverWsPort = AppConstants.defaultWsPort,
     this.serverUdpPort = AppConstants.defaultUdpPort,
+    this.isTestingMic = false,
+    this.micTestInputLevelDb = -90.0,
+    this.isMicSpeaking = false,
   });
 
   SettingsState copyWith({
@@ -44,6 +53,9 @@ class SettingsState {
     String? serverHost,
     int? serverWsPort,
     int? serverUdpPort,
+    bool? isTestingMic,
+    double? micTestInputLevelDb,
+    bool? isMicSpeaking,
   }) {
     return SettingsState(
       inputDevices: inputDevices ?? this.inputDevices,
@@ -56,6 +68,9 @@ class SettingsState {
       serverHost: serverHost ?? this.serverHost,
       serverWsPort: serverWsPort ?? this.serverWsPort,
       serverUdpPort: serverUdpPort ?? this.serverUdpPort,
+      isTestingMic: isTestingMic ?? this.isTestingMic,
+      micTestInputLevelDb: micTestInputLevelDb ?? this.micTestInputLevelDb,
+      isMicSpeaking: isMicSpeaking ?? this.isMicSpeaking,
     );
   }
 }
@@ -76,9 +91,12 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
   final AudioEngineService _audioEngine;
   final VadService _vadService;
   final PttService _pttService;
+  final WebSocketService? _ws;
+  StreamSubscription? _micTestSub;
 
-  SettingsNotifier(this._audioEngine, this._vadService, this._pttService)
-      : super(const SettingsState()) {
+  SettingsNotifier(this._audioEngine, this._vadService, this._pttService, {WebSocketService? ws})
+      : _ws = ws,
+        super(const SettingsState()) {
     refreshDevices();
     loadPersistedSettings();
   }
@@ -109,6 +127,7 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       final mode = modeStr == 'ptt' ? InputActivationMode.pushToTalk : InputActivationMode.voiceActivity;
       _vadService.setThreshold(vadDb);
       _pttService.setMode(mode);
+      _ws?.configure(host: host, port: wsPort);
 
       state = state.copyWith(
         serverHost: host,
@@ -117,6 +136,14 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
         activationMode: mode,
       );
     } catch (_) {}
+  }
+
+  void setServerEndpoint(String host, int wsPort) async {
+    state = state.copyWith(serverHost: host, serverWsPort: wsPort);
+    _ws?.configure(host: host, port: wsPort);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('server_host', host);
+    await prefs.setInt('server_ws_port', wsPort);
   }
 
   void setInputDevice(AudioDevice device) {
@@ -149,11 +176,52 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     _pttService.setHotkey(key);
   }
 
-  void setServerEndpoint(String host, int wsPort) async {
-    state = state.copyWith(serverHost: host, serverWsPort: wsPort);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('server_host', host);
-    await prefs.setInt('server_ws_port', wsPort);
+  void startMicTest() {
+    if (state.isTestingMic) return;
+
+    state = state.copyWith(
+      isTestingMic: true,
+      micTestInputLevelDb: -90.0,
+      isMicSpeaking: false,
+    );
+
+    _micTestSub?.cancel();
+    _micTestSub = _audioEngine.micTestStream.listen((data) {
+      if (state.isTestingMic) {
+        state = state.copyWith(
+          micTestInputLevelDb: data.dbfs,
+          isMicSpeaking: data.isSpeaking,
+        );
+      }
+    });
+
+    _audioEngine.startMicTest();
+  }
+
+  void stopMicTest() {
+    _micTestSub?.cancel();
+    _micTestSub = null;
+    _audioEngine.stopMicTest();
+
+    state = state.copyWith(
+      isTestingMic: false,
+      micTestInputLevelDb: -90.0,
+      isMicSpeaking: false,
+    );
+  }
+
+  void toggleMicTest() {
+    if (state.isTestingMic) {
+      stopMicTest();
+    } else {
+      startMicTest();
+    }
+  }
+
+  @override
+  void dispose() {
+    stopMicTest();
+    super.dispose();
   }
 }
 
@@ -161,5 +229,6 @@ final settingsProvider = StateNotifierProvider<SettingsNotifier, SettingsState>(
   final engine = ref.watch(audioEngineProvider);
   final vad = ref.watch(vadServiceProvider);
   final ptt = ref.watch(pttServiceProvider);
-  return SettingsNotifier(engine, vad, ptt);
+  final ws = ref.watch(webSocketServiceProvider);
+  return SettingsNotifier(engine, vad, ptt, ws: ws);
 });

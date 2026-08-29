@@ -53,7 +53,7 @@ class WebSocketService {
     try {
       final uri = Uri.parse('ws://$_host:$_port/ws');
       final channel = WebSocketChannel.connect(uri);
-      await channel.ready.timeout(const Duration(seconds: 5));
+      await channel.ready.timeout(const Duration(seconds: 4));
       _channel = channel;
 
       _updateStatus(WsConnectionStatus.connected);
@@ -72,6 +72,7 @@ class WebSocketService {
       }
     } catch (e) {
       _onError(e);
+      throw Exception('Could not connect to WebSocket at ws://$_host:$_port/ws. Please verify the server is running.');
     }
   }
 

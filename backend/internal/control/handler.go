@@ -55,7 +55,7 @@ func (h *Hub) HandleMessage(c *Client, raw []byte) {
 		h.handleLogin(c, reqID, params)
 	case "auth":
 		h.handleAuth(c, reqID, params)
-	case "get_channels":
+	case "get_channels", "list_channels":
 		h.handleGetChannels(c, reqID)
 	case "create_channel":
 		h.handleCreateChannel(c, reqID, params)
@@ -297,9 +297,9 @@ func (h *Hub) handleCreateChannel(c *Client, reqID interface{}, params map[strin
 		return
 	}
 
-	name := getString(params, "name")
-	channelType := strings.ToLower(getString(params, "type"))
-	category := getString(params, "category")
+	name := strings.TrimSpace(getString(params, "name"))
+	channelType := strings.ToLower(strings.TrimSpace(getString(params, "type")))
+	category := strings.TrimSpace(getString(params, "category"))
 	position := getInt(params, "position")
 	bitrate := getInt(params, "bitrate")
 	userLimit := getInt(params, "user_limit")
@@ -307,6 +307,20 @@ func (h *Hub) handleCreateChannel(c *Client, reqID interface{}, params map[strin
 	if name == "" || (channelType != "text" && channelType != "voice") {
 		c.SendJSON(NewErrorResponse(reqID, "create_channel", ErrCodeInvalidParams, "Invalid channel name or type ('text' or 'voice' required)"))
 		return
+	}
+
+	if category == "" {
+		if channelType == "voice" {
+			category = "Voice Channels"
+		} else {
+			category = "Text Channels"
+		}
+	}
+	if bitrate == 0 {
+		bitrate = 64000
+	}
+	if userLimit == 0 && channelType == "voice" {
+		userLimit = 15
 	}
 
 	ch, err := h.storage.CreateChannel(name, channelType, category, position, bitrate, userLimit)
@@ -467,6 +481,11 @@ func (h *Hub) handleJoinVoice(c *Client, reqID interface{}, params map[string]in
 	}
 
 	h.mu.Lock()
+	if !h.clients[c] || c.closed {
+		h.mu.Unlock()
+		return
+	}
+
 	occupants := h.voiceChannels[channelID]
 	limit := ch.UserLimit
 	if limit == 0 {

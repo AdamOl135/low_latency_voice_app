@@ -7,12 +7,14 @@ import 'package:low_latency_voice_app/models/channel.dart';
 import 'package:low_latency_voice_app/models/user.dart';
 import 'package:low_latency_voice_app/state/auth_notifier.dart';
 import 'package:low_latency_voice_app/state/channels_notifier.dart';
+import 'package:low_latency_voice_app/state/voice_notifier.dart';
 import 'package:low_latency_voice_app/ui/channels_pane.dart';
 import 'package:low_latency_voice_app/ui/chat_pane.dart';
 import 'package:low_latency_voice_app/ui/dialogs/admin_mod_dialog.dart';
 import 'package:low_latency_voice_app/ui/dialogs/audio_settings_dialog.dart';
 import 'package:low_latency_voice_app/ui/main_layout.dart';
 import 'package:low_latency_voice_app/ui/roster_pane.dart';
+import 'package:low_latency_voice_app/ui/voice_hud.dart';
 
 void main() {
   testWidgets('App renders login screen when unauthenticated', (WidgetTester tester) async {
@@ -82,14 +84,16 @@ void main() {
     expect(find.text('Squad-Alpha'), findsOneWidget);
   });
 
-  testWidgets('AudioSettingsDialog renders input/output selectors and sliders', (WidgetTester tester) async {
-    await tester.binding.setSurfaceSize(const Size(1280, 720));
+  testWidgets('AudioSettingsDialog renders mic test card and toggles test state', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
     await tester.pumpWidget(
       ProviderScope(
         child: MaterialApp(
           theme: AppTheme.darkTheme,
           home: const Scaffold(
-            body: AudioSettingsDialog(),
+            body: Center(
+              child: AudioSettingsDialog(),
+            ),
           ),
         ),
       ),
@@ -97,10 +101,62 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('Voice & Audio Settings'), findsOneWidget);
-    expect(find.text('INPUT DEVICE'), findsOneWidget);
-    expect(find.text('OUTPUT DEVICE'), findsOneWidget);
+    expect(find.text('INPUT DEVICE (MICROPHONE)'), findsOneWidget);
+    expect(find.text('OUTPUT DEVICE (SPEAKERS / HEADPHONES)'), findsOneWidget);
+    expect(find.text('MIC TEST'), findsOneWidget);
+    expect(find.text('Test Mic'), findsOneWidget);
     expect(find.text('Voice Activity'), findsOneWidget);
     expect(find.text('Push-to-Talk'), findsOneWidget);
+
+    // Tap "Test Mic" button
+    final testMicButton = find.byKey(const Key('mic_test_toggle_button'));
+    expect(testMicButton, findsOneWidget);
+    await tester.tap(testMicButton);
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // Should now show "Stop Testing"
+    expect(find.text('Stop Testing'), findsOneWidget);
+
+    // Tap again to stop
+    await tester.tap(testMicButton);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Test Mic'), findsOneWidget);
+  });
+
+  testWidgets('VoiceHud renders live audio connection status and transmitting indicator', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          voiceProvider.overrideWith((ref) {
+            final ws = ref.watch(webSocketServiceProvider);
+            final client = ref.watch(voiceClientProvider);
+            final engine = ref.watch(audioEngineProvider);
+            final notifier = VoiceNotifier(ws, client, engine, ref);
+            notifier.state = const VoiceStateModel(
+              status: VoiceConnectionStatus.connected,
+              connectedChannelId: 2,
+              connectedChannelName: 'Squad-Alpha',
+              pingMs: 12.0,
+              isLocalSpeaking: true,
+              localInputLevelDb: -18.5,
+            );
+            return notifier;
+          }),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: const Scaffold(
+            body: VoiceHud(),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Voice Connected / Squad-Alpha'), findsOneWidget);
+    expect(find.text('TRANSMITTING'), findsOneWidget);
+    expect(find.text('12ms RTC (UDP SFU)'), findsOneWidget);
   });
 
   testWidgets('AdminModDialog displays user moderation options', (WidgetTester tester) async {

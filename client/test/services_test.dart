@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:low_latency_voice_app/core/constants.dart';
+import 'package:low_latency_voice_app/services/audio_engine.dart';
 import 'package:low_latency_voice_app/services/ptt_service.dart';
 import 'package:low_latency_voice_app/services/vad_service.dart';
 import 'package:low_latency_voice_app/services/voice_client.dart';
@@ -171,6 +172,79 @@ void main() {
       ));
       expect(handled, isFalse);
       expect(ptt.isPressed, isFalse);
+    });
+  });
+
+  group('Audio Engine Service & Mic Test Tests', () {
+    late AudioEngineService engine;
+
+    setUp(() {
+      engine = AudioEngineService();
+      engine.initialize();
+    });
+
+    tearDown(() {
+      engine.destroy();
+    });
+
+    test('Device enumeration returns non-empty input and output device lists', () {
+      final inputs = engine.getInputDevices();
+      final outputs = engine.getOutputDevices();
+
+      expect(inputs, isNotEmpty);
+      expect(outputs, isNotEmpty);
+      expect(inputs.any((d) => d.isDefault), isTrue);
+      expect(outputs.any((d) => d.isDefault), isTrue);
+    });
+
+    test('startCapture emits captured audio frames with valid energy and dBFS', () async {
+      engine.startCapture();
+      expect(engine.isCapturing, isTrue);
+
+      final frame = await engine.onAudioCaptured.first;
+      expect(frame.data.length, equals(AppConstants.frameSamples * 2));
+      expect(frame.inputLevelDb, greaterThanOrEqualTo(-90.0));
+      expect(frame.energyLevel, inInclusiveRange(0, 15));
+
+      engine.stopCapture();
+      expect(engine.isCapturing, isFalse);
+    });
+
+    test('startMicTest enables testing mode and streams live VU level metrics', () async {
+      var levelReceived = false;
+      double lastDbfs = -90.0;
+
+      engine.startMicTest(onLevelUpdate: (dbfs, isSpeaking) {
+        levelReceived = true;
+        lastDbfs = dbfs;
+      });
+
+      expect(engine.isTestingMic, isTrue);
+
+      // Wait for frame pump to cycle
+      await Future.delayed(const Duration(milliseconds: 60));
+
+      expect(levelReceived, isTrue);
+      expect(lastDbfs, greaterThanOrEqualTo(-90.0));
+
+      engine.stopMicTest();
+      expect(engine.isTestingMic, isFalse);
+    });
+
+    test('feedInboundPacket processes inbound datagram bytes cleanly', () {
+      final packet = VoicePacket(
+        type: AppConstants.packetTypeVoice,
+        senderId: 77,
+        channelId: 101,
+        sequence: 1,
+        timestamp: 1000,
+        vad: true,
+        energyLevel: 8,
+        payload: Uint8List(AppConstants.frameSamples * 2),
+      );
+
+      final encoded = packet.encode();
+      expect(() => engine.feedInboundPacket(encoded), returnsNormally);
     });
   });
 }

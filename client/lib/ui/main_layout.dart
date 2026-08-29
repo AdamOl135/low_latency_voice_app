@@ -5,6 +5,7 @@ import '../../core/theme.dart';
 import '../../state/auth_notifier.dart';
 import '../../state/channels_notifier.dart';
 import '../../state/roster_notifier.dart';
+import '../../state/settings_notifier.dart';
 import 'channels_pane.dart';
 import 'chat_pane.dart';
 import 'roster_pane.dart';
@@ -23,14 +24,25 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
   // Auth controllers
   final TextEditingController _usernameController = TextEditingController(text: 'Admin');
   final TextEditingController _passwordController = TextEditingController(text: 'admin123456');
+  final TextEditingController _hostController = TextEditingController(text: AppConstants.defaultHost);
+  final TextEditingController _portController = TextEditingController(text: '${AppConstants.defaultWsPort}');
   bool _isRegistering = false;
+  bool _showServerSettings = false;
 
   @override
   void initState() {
     super.initState();
     // Auto-login or bootstrap session
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      ref.read(authProvider.notifier).checkSavedSession();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      final settings = ref.read(settingsProvider);
+      _hostController.text = settings.serverHost;
+      _portController.text = '${settings.serverWsPort}';
+
+      await ref.read(authProvider.notifier).checkSavedSession();
+      if (mounted && ref.read(authProvider).isAuthenticated) {
+        ref.read(channelsProvider.notifier).fetchChannels();
+        ref.read(rosterProvider.notifier).fetchRoster();
+      }
     });
   }
 
@@ -38,6 +50,8 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
   void dispose() {
     _usernameController.dispose();
     _passwordController.dispose();
+    _hostController.dispose();
+    _portController.dispose();
     super.dispose();
   }
 
@@ -45,6 +59,11 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
     if (username.isEmpty || password.isEmpty) return;
+
+    final host = _hostController.text.trim().isNotEmpty ? _hostController.text.trim() : AppConstants.defaultHost;
+    final port = int.tryParse(_portController.text.trim()) ?? AppConstants.defaultWsPort;
+    ref.read(settingsProvider.notifier).setServerEndpoint(host, port);
+    ref.read(webSocketServiceProvider).configure(host: host, port: port);
 
     final authNotifier = ref.read(authProvider.notifier);
     bool success;
@@ -206,6 +225,56 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
                     style: const TextStyle(color: AppTheme.primary, fontSize: 13),
                   ),
                 ),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: () => setState(() => _showServerSettings = !_showServerSettings),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          _showServerSettings ? Icons.arrow_drop_up : Icons.arrow_drop_down,
+                          color: AppTheme.textMuted,
+                          size: 18,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Server: ${_hostController.text}:${_portController.text}',
+                          style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (_showServerSettings) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 3,
+                        child: TextField(
+                          controller: _hostController,
+                          decoration: const InputDecoration(
+                            labelText: 'SERVER HOST',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 2,
+                        child: TextField(
+                          controller: _portController,
+                          decoration: const InputDecoration(
+                            labelText: 'PORT',
+                            isDense: true,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
             ),
           ),

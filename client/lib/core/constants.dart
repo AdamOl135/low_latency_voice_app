@@ -1,7 +1,7 @@
 /// Protocol constants, network endpoints, opcodes, and UI dimensions.
 class AppConstants {
   // Network Endpoints
-  static const String defaultHost = '100.108.39.69';
+  static const String defaultHost = '127.0.0.1';
   static const int defaultWsPort = 8085;
   static const int defaultUdpPort = 7878;
 

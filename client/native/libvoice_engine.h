@@ -68,7 +68,19 @@ VOICE_API void voice_engine_set_local_mute(bool muted);
 VOICE_API void voice_engine_set_local_deafen(bool deafened);
 VOICE_API void voice_engine_set_user_volume(uint32_t user_id, float volume_multiplier);
 
-// Inbound Audio Packet Processing
+// Microphone Testing & Real-time Feedback
+VOICE_API void voice_engine_set_mic_test_loopback(bool enabled);
+VOICE_API bool voice_engine_is_mic_test_active(void);
+VOICE_API float voice_engine_get_input_level_db(void);
+
+// Frame Capture & Inbound Processing
+VOICE_API int32_t voice_engine_capture_frame(
+    uint8_t* out_buffer,
+    uint32_t max_len,
+    float* out_level_db,
+    bool* out_is_speaking,
+    uint8_t* out_energy_level
+);
 VOICE_API void voice_engine_feed_inbound_packet(const uint8_t* packet_bytes, uint32_t length);
 
 // Callbacks & Telemetry

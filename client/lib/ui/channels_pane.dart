@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants.dart';
 import '../../core/theme.dart';
 import '../../models/channel.dart';
-import '../../models/role.dart';
 import '../../models/user.dart';
 import '../../state/auth_notifier.dart';
 import '../../state/channels_notifier.dart';
@@ -22,9 +21,7 @@ class ChannelsPane extends ConsumerWidget {
     final voiceState = ref.watch(voiceProvider);
     final voiceNotifier = ref.read(voiceProvider.notifier);
 
-    final currentUser = authState.user;
-    final canManageChannels = currentUser != null &&
-        Role.hasPermission(currentUser.permissions, AppConstants.permManageChannels);
+    final canCreateChannel = authState.isAuthenticated;
 
     return Container(
       width: AppConstants.leftPaneWidth,
@@ -62,7 +59,7 @@ class ChannelsPane extends ConsumerWidget {
                     ],
                   ),
                 ),
-                if (canManageChannels)
+                if (canCreateChannel)
                   IconButton(
                     icon: const Icon(Icons.add, color: AppTheme.textMuted, size: 20),
                     tooltip: 'Create Channel',
@@ -180,6 +177,7 @@ class ChannelsPane extends ConsumerWidget {
   ) {
     final roster = ref.watch(rosterProvider);
     final voiceState = ref.watch(voiceProvider);
+    final currentUser = ref.watch(authProvider).user;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -224,7 +222,8 @@ class ChannelsPane extends ConsumerWidget {
                   (m) => m.userId == userId,
                   orElse: () => UserProfile(userId: userId, username: 'User #$userId'),
                 );
-                final isSpeaking = voiceState.speakingUsers[userId] == true;
+                final isSpeaking = (voiceState.speakingUsers[userId] == true) ||
+                    (userId == currentUser?.id && voiceState.isLocalSpeaking && !voiceState.isMuted);
                 final vs = roster.getVoiceState(userId);
 
                 return Padding(
@@ -241,6 +240,15 @@ class ChannelsPane extends ConsumerWidget {
                             color: isSpeaking ? AppTheme.speakingGreen : Colors.transparent,
                             width: 2,
                           ),
+                          boxShadow: isSpeaking
+                              ? [
+                                  BoxShadow(
+                                    color: AppTheme.speakingGreen.withAlpha(120),
+                                    blurRadius: 4,
+                                    spreadRadius: 1,
+                                  ),
+                                ]
+                              : null,
                         ),
                         child: Center(
                           child: Text(
@@ -256,6 +264,7 @@ class ChannelsPane extends ConsumerWidget {
                           style: TextStyle(
                             color: isSpeaking ? AppTheme.speakingGreen : AppTheme.textSecondary,
                             fontSize: 13,
+                            fontWeight: isSpeaking ? FontWeight.w600 : FontWeight.normal,
                           ),
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -279,6 +288,8 @@ class ChannelsPane extends ConsumerWidget {
     final voiceState = ref.watch(voiceProvider);
     final voiceNotifier = ref.read(voiceProvider.notifier);
     final user = authState.user;
+    final isLocalSpeaking = (user != null && voiceState.speakingUsers[user.id] == true) ||
+        (voiceState.isLocalSpeaking && !voiceState.isMuted);
 
     return Container(
       height: AppConstants.bottomUserDockHeight,
@@ -286,13 +297,26 @@ class ChannelsPane extends ConsumerWidget {
       color: const Color(0xFF232428),
       child: Row(
         children: [
-          // Avatar
+          // Avatar with Speaking Halo
           Container(
             width: 34,
             height: 34,
-            decoration: const BoxDecoration(
+            decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: AppTheme.primary,
+              border: Border.all(
+                color: isLocalSpeaking ? AppTheme.speakingGreen : Colors.transparent,
+                width: 2.5,
+              ),
+              boxShadow: isLocalSpeaking
+                  ? [
+                      BoxShadow(
+                        color: AppTheme.speakingGreen.withAlpha(150),
+                        blurRadius: 6,
+                        spreadRadius: 1,
+                      ),
+                    ]
+                  : null,
             ),
             child: Center(
               child: Text(

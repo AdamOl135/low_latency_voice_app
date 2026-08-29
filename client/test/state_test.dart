@@ -1,14 +1,18 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:low_latency_voice_app/core/constants.dart';
+import 'package:low_latency_voice_app/models/audio_device.dart';
 import 'package:low_latency_voice_app/models/role.dart';
 import 'package:low_latency_voice_app/models/voice_state.dart';
 import 'package:low_latency_voice_app/services/audio_engine.dart';
+import 'package:low_latency_voice_app/services/ptt_service.dart';
+import 'package:low_latency_voice_app/services/vad_service.dart';
 import 'package:low_latency_voice_app/services/voice_client.dart';
 import 'package:low_latency_voice_app/services/websocket_service.dart';
 import 'package:low_latency_voice_app/state/auth_notifier.dart';
 import 'package:low_latency_voice_app/state/channels_notifier.dart';
 import 'package:low_latency_voice_app/state/chat_notifier.dart';
+import 'package:low_latency_voice_app/state/settings_notifier.dart';
 import 'package:low_latency_voice_app/state/voice_notifier.dart';
 
 void main() {
@@ -128,6 +132,8 @@ void main() {
       expect(voiceState.status, equals(VoiceConnectionStatus.disconnected));
       expect(voiceState.isConnected, isFalse);
       expect(voiceState.connectedChannelId, isNull);
+      expect(voiceState.localInputLevelDb, equals(-90.0));
+      expect(voiceState.isLocalSpeaking, isFalse);
     });
 
     test('Toggling mute updates local state and calls audio engine', () {
@@ -148,6 +154,68 @@ void main() {
       voiceNotifier.toggleDeafen();
       expect(container.read(voiceProvider).selfDeafened, isTrue);
       expect(container.read(voiceProvider).selfMuted, isTrue);
+    });
+  });
+
+  group('Settings State Notifier & Mic Test Tests', () {
+    late AudioEngineService audioEngine;
+    late VadService vadService;
+    late PttService pttService;
+    late SettingsNotifier settingsNotifier;
+
+    setUp(() {
+      audioEngine = AudioEngineService();
+      audioEngine.initialize();
+      vadService = VadService();
+      pttService = PttService();
+      settingsNotifier = SettingsNotifier(audioEngine, vadService, pttService);
+    });
+
+    tearDown(() {
+      settingsNotifier.dispose();
+      audioEngine.destroy();
+      vadService.dispose();
+      pttService.dispose();
+    });
+
+    test('Initial settings state populates input and output devices', () {
+      final state = settingsNotifier.state;
+      expect(state.inputDevices, isNotEmpty);
+      expect(state.outputDevices, isNotEmpty);
+      expect(state.selectedInputDevice, isNotNull);
+      expect(state.selectedOutputDevice, isNotNull);
+      expect(state.isTestingMic, isFalse);
+    });
+
+    test('startMicTest and stopMicTest manage testing state', () {
+      expect(settingsNotifier.state.isTestingMic, isFalse);
+
+      settingsNotifier.startMicTest();
+      expect(settingsNotifier.state.isTestingMic, isTrue);
+
+      settingsNotifier.stopMicTest();
+      expect(settingsNotifier.state.isTestingMic, isFalse);
+    });
+
+    test('toggleMicTest switches mic testing state', () {
+      expect(settingsNotifier.state.isTestingMic, isFalse);
+
+      settingsNotifier.toggleMicTest();
+      expect(settingsNotifier.state.isTestingMic, isTrue);
+
+      settingsNotifier.toggleMicTest();
+      expect(settingsNotifier.state.isTestingMic, isFalse);
+    });
+
+    test('Setting input and output devices updates selected device', () {
+      const customMic = AudioDevice(id: 'usb_mic_2', name: 'USB Cardioid Mic', isInput: true);
+      const customSpeaker = AudioDevice(id: 'spk_2', name: 'Studio Monitors', isInput: false);
+
+      settingsNotifier.setInputDevice(customMic);
+      expect(settingsNotifier.state.selectedInputDevice?.id, equals('usb_mic_2'));
+
+      settingsNotifier.setOutputDevice(customSpeaker);
+      expect(settingsNotifier.state.selectedOutputDevice?.id, equals('spk_2'));
     });
   });
 }

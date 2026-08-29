@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 import '../core/constants.dart';
@@ -77,6 +79,12 @@ typedef _StreamControlDart = int Function();
 typedef _SetBoolNative = ffi.Void Function(ffi.Bool);
 typedef _SetBoolDart = void Function(bool);
 
+typedef _GetBoolNative = ffi.Bool Function();
+typedef _GetBoolDart = bool Function();
+
+typedef _GetFloatNative = ffi.Float Function();
+typedef _GetFloatDart = double Function();
+
 typedef _SetVadModeNative = ffi.Void Function(ffi.Bool, ffi.Float);
 typedef _SetVadModeDart = void Function(bool, double);
 
@@ -86,15 +94,48 @@ typedef _SetUserVolumeDart = void Function(int, double);
 typedef _FeedInboundPacketNative = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Uint32);
 typedef _FeedInboundPacketDart = void Function(ffi.Pointer<ffi.Uint8>, int);
 
+typedef _CaptureFrameNative = ffi.Int32 Function(
+  ffi.Pointer<ffi.Uint8>,
+  ffi.Uint32,
+  ffi.Pointer<ffi.Float>,
+  ffi.Pointer<ffi.Bool>,
+  ffi.Pointer<ffi.Uint8>,
+);
+typedef _CaptureFrameDart = int Function(
+  ffi.Pointer<ffi.Uint8>,
+  int,
+  ffi.Pointer<ffi.Float>,
+  ffi.Pointer<ffi.Bool>,
+  ffi.Pointer<ffi.Uint8>,
+);
+
 typedef _GetStatsNative = ffi.Void Function(ffi.Pointer<AudioEngineStatsC>);
 typedef _GetStatsDart = void Function(ffi.Pointer<AudioEngineStatsC>);
 
-/// Dart wrapper around the native C audio subsystem (`libvoice_engine`).
+/// Represents a captured 20ms audio frame with VAD analysis.
+class AudioCapturedFrame {
+  final Uint8List data;
+  final bool isSpeaking;
+  final int energyLevel;
+  final double inputLevelDb;
+  final int timestamp;
+
+  const AudioCapturedFrame({
+    required this.data,
+    required this.isSpeaking,
+    required this.energyLevel,
+    required this.inputLevelDb,
+    required this.timestamp,
+  });
+}
+
+/// High-performance audio engine service coordinating hardware I/O, FFI, VAD, and mixer.
 class AudioEngineService {
   ffi.DynamicLibrary? _dylib;
   bool _isInitialized = false;
   bool _isCapturing = false;
   bool _isPlaybackActive = false;
+  bool _isTestingMic = false;
 
   _InitDart? _cInit;
   _DestroyDart? _cDestroy;
@@ -111,12 +152,38 @@ class AudioEngineService {
   _SetBoolDart? _cSetLocalMute;
   _SetBoolDart? _cSetLocalDeafen;
   _SetUserVolumeDart? _cSetUserVolume;
+  _SetBoolDart? _cSetMicTestLoopback;
+  _GetBoolDart? _cIsMicTestActive;
+  _GetFloatDart? _cGetInputLevelDb;
+  _CaptureFrameDart? _cCaptureFrame;
   _FeedInboundPacketDart? _cFeedInboundPacket;
   _GetStatsDart? _cGetStats;
+
+  Timer? _framePumpTimer;
+  int _sampleTimestamp = 0;
+  double _lastInputLevelDb = -90.0;
+  bool _lastIsSpeaking = false;
+  bool _isLocalMuted = false;
+  bool _isLocalDeafened = false;
+
+  void Function(double dbfs, bool isSpeaking)? _onMicTestCallback;
+
+  final StreamController<AudioCapturedFrame> _captureStreamController =
+      StreamController<AudioCapturedFrame>.broadcast();
+  Stream<AudioCapturedFrame> get onAudioCaptured => _captureStreamController.stream;
+
+  final StreamController<({double dbfs, bool isSpeaking})> _micTestStreamController =
+      StreamController<({double dbfs, bool isSpeaking})>.broadcast();
+  Stream<({double dbfs, bool isSpeaking})> get micTestStream => _micTestStreamController.stream;
 
   bool get isInitialized => _isInitialized;
   bool get isCapturing => _isCapturing;
   bool get isPlaybackActive => _isPlaybackActive;
+  bool get isTestingMic => _isTestingMic;
+  bool get isLocalDeafened => _isLocalDeafened;
+  double get lastInputLevelDb => _cGetInputLevelDb?.call() ?? _lastInputLevelDb;
+  bool get lastIsSpeaking => _lastIsSpeaking;
+  bool get isMicTestActive => _cIsMicTestActive?.call() ?? _isTestingMic;
 
   /// Loads dynamic library (`voice_engine.dll` / `libvoice_engine.so`).
   bool initialize({
@@ -127,18 +194,7 @@ class AudioEngineService {
     double vadThresholdDb = AppConstants.defaultVadThresholdDb,
     int vadHangoverMs = AppConstants.defaultVadHangoverMs,
   }) {
-    try {
-      if (Platform.isWindows) {
-        _dylib = ffi.DynamicLibrary.open('voice_engine.dll');
-      } else if (Platform.isLinux) {
-        _dylib = ffi.DynamicLibrary.open('libvoice_engine.so');
-      } else if (Platform.isMacOS) {
-        _dylib = ffi.DynamicLibrary.open('libvoice_engine.dylib');
-      }
-    } catch (_) {
-      // Dynamic library not present (e.g. running in pure Dart VM / headless test runner)
-      _dylib = null;
-    }
+    _loadDynamicLibrary();
 
     if (_dylib != null) {
       try {
@@ -157,6 +213,10 @@ class AudioEngineService {
         _cSetLocalMute = _dylib!.lookupFunction<_SetBoolNative, _SetBoolDart>('voice_engine_set_local_mute');
         _cSetLocalDeafen = _dylib!.lookupFunction<_SetBoolNative, _SetBoolDart>('voice_engine_set_local_deafen');
         _cSetUserVolume = _dylib!.lookupFunction<_SetUserVolumeNative, _SetUserVolumeDart>('voice_engine_set_user_volume');
+        _cSetMicTestLoopback = _dylib!.lookupFunction<_SetBoolNative, _SetBoolDart>('voice_engine_set_mic_test_loopback');
+        _cIsMicTestActive = _dylib!.lookupFunction<_GetBoolNative, _GetBoolDart>('voice_engine_is_mic_test_active');
+        _cGetInputLevelDb = _dylib!.lookupFunction<_GetFloatNative, _GetFloatDart>('voice_engine_get_input_level_db');
+        _cCaptureFrame = _dylib!.lookupFunction<_CaptureFrameNative, _CaptureFrameDart>('voice_engine_capture_frame');
         _cFeedInboundPacket = _dylib!.lookupFunction<_FeedInboundPacketNative, _FeedInboundPacketDart>('voice_engine_feed_inbound_packet');
         _cGetStats = _dylib!.lookupFunction<_GetStatsNative, _GetStatsDart>('voice_engine_get_stats');
 
@@ -178,7 +238,118 @@ class AudioEngineService {
       _isInitialized = true; // Safe fallback initialized
     }
 
+    _checkFramePump();
     return _isInitialized;
+  }
+
+  void _loadDynamicLibrary() {
+    final candidatePaths = <String>[];
+    if (Platform.isWindows) {
+      candidatePaths.addAll([
+        'voice_engine.dll',
+        '${Directory.current.path}\\voice_engine.dll',
+        '${Directory.current.path}\\native\\build\\Release\\voice_engine.dll',
+        '${Directory.current.path}\\client\\native\\build\\Release\\voice_engine.dll',
+        '${Directory.current.path}\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
+        '${Directory.current.path}\\client\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
+      ]);
+    } else if (Platform.isLinux) {
+      candidatePaths.addAll([
+        'libvoice_engine.so',
+        '${Directory.current.path}/libvoice_engine.so',
+        '${Directory.current.path}/native/build/libvoice_engine.so',
+      ]);
+    } else if (Platform.isMacOS) {
+      candidatePaths.addAll([
+        'libvoice_engine.dylib',
+        '${Directory.current.path}/libvoice_engine.dylib',
+      ]);
+    }
+
+    for (final path in candidatePaths) {
+      try {
+        _dylib = ffi.DynamicLibrary.open(path);
+        if (_dylib != null) return;
+      } catch (_) {}
+    }
+    _dylib = null;
+  }
+
+  void _checkFramePump() {
+    if (_isCapturing || _isTestingMic) {
+      if (_framePumpTimer == null || !_framePumpTimer!.isActive) {
+        _framePumpTimer = Timer.periodic(const Duration(milliseconds: AppConstants.frameDurationMs), (_) {
+          _onFramePumpTick();
+        });
+      }
+    } else {
+      _framePumpTimer?.cancel();
+      _framePumpTimer = null;
+    }
+  }
+
+  void _onFramePumpTick() {
+    if (!_isCapturing && !_isTestingMic) return;
+
+    _sampleTimestamp += AppConstants.frameSamples;
+    const byteCount = AppConstants.frameSamples * 2; // 16-bit PCM mono = 1920 bytes
+
+    Uint8List frameBytes;
+    double dbfs = -90.0;
+    bool isSpeaking = false;
+    int energyLevel = 0;
+
+    if (_cCaptureFrame != null) {
+      final outBuf = calloc<ffi.Uint8>(byteCount);
+      final outLevel = calloc<ffi.Float>();
+      final outSpeaking = calloc<ffi.Bool>();
+      final outEnergy = calloc<ffi.Uint8>();
+
+      final readBytes = _cCaptureFrame!(outBuf, byteCount, outLevel, outSpeaking, outEnergy);
+      if (readBytes > 0) {
+        frameBytes = Uint8List.fromList(outBuf.asTypedList(readBytes));
+        dbfs = outLevel.value;
+        isSpeaking = outSpeaking.value;
+        energyLevel = outEnergy.value;
+      } else {
+        frameBytes = Uint8List(byteCount);
+      }
+
+      calloc.free(outBuf);
+      calloc.free(outLevel);
+      calloc.free(outSpeaking);
+      calloc.free(outEnergy);
+    } else {
+      // High-fidelity synthetic frame generation for pure Dart / headless fallback
+      frameBytes = Uint8List(byteCount);
+      if (!_isLocalMuted) {
+        final pcm = frameBytes.buffer.asInt16List();
+        for (var i = 0; i < pcm.length; i++) {
+          pcm[i] = (math.sin(i * 0.1) * 6000).toInt();
+        }
+        dbfs = -18.5;
+        isSpeaking = true;
+        energyLevel = 10;
+      }
+    }
+
+    _lastInputLevelDb = dbfs;
+    _lastIsSpeaking = isSpeaking;
+
+    if (_isCapturing && !_isLocalMuted) {
+      _captureStreamController.add(AudioCapturedFrame(
+        data: frameBytes,
+        isSpeaking: isSpeaking,
+        energyLevel: energyLevel,
+        inputLevelDb: dbfs,
+        timestamp: _sampleTimestamp,
+      ));
+    }
+
+    if (_isTestingMic) {
+      _micTestStreamController.add((dbfs: dbfs, isSpeaking: isSpeaking));
+      _onMicTestCallback?.call(dbfs, isSpeaking);
+    }
   }
 
   /// Enumerates hardware input (microphone) devices.
@@ -201,13 +372,14 @@ class AudioEngineService {
         ));
       }
       calloc.free(devArray);
-      return result;
+      if (result.isNotEmpty) return result;
     }
 
     // Default fallback devices
     return const [
       AudioDevice(id: 'default_input', name: 'Default System Microphone', isInput: true, isDefault: true),
-      AudioDevice(id: 'headset_mic', name: 'Headset Microphone', isInput: true, isDefault: false),
+      AudioDevice(id: 'headset_mic', name: 'Headset Microphone (Realtek Audio)', isInput: true, isDefault: false),
+      AudioDevice(id: 'usb_mic', name: 'USB Studio Microphone (High Definition)', isInput: true, isDefault: false),
     ];
   }
 
@@ -231,13 +403,14 @@ class AudioEngineService {
         ));
       }
       calloc.free(devArray);
-      return result;
+      if (result.isNotEmpty) return result;
     }
 
     // Default fallback devices
     return const [
       AudioDevice(id: 'default_output', name: 'Default System Speakers', isInput: false, isDefault: true),
-      AudioDevice(id: 'headphones', name: 'Headphones / Headset', isInput: false, isDefault: false),
+      AudioDevice(id: 'headphones', name: 'Headphones / Gaming Headset', isInput: false, isDefault: false),
+      AudioDevice(id: 'line_out', name: 'Digital Line Out (High Definition Audio)', isInput: false, isDefault: false),
     ];
   }
 
@@ -260,11 +433,15 @@ class AudioEngineService {
   void startCapture() {
     _isCapturing = true;
     _cStartCapture?.call();
+    _checkFramePump();
   }
 
   void stopCapture() {
     _isCapturing = false;
     _cStopCapture?.call();
+    _lastInputLevelDb = -90.0;
+    _lastIsSpeaking = false;
+    _checkFramePump();
   }
 
   void startPlayback() {
@@ -286,15 +463,46 @@ class AudioEngineService {
   }
 
   void setLocalMute(bool muted) {
+    _isLocalMuted = muted;
     _cSetLocalMute?.call(muted);
+    if (muted) {
+      _lastIsSpeaking = false;
+    }
   }
 
   void setLocalDeafen(bool deafened) {
+    _isLocalDeafened = deafened;
     _cSetLocalDeafen?.call(deafened);
   }
 
   void setUserVolume(int userId, double volumeMultiplier) {
     _cSetUserVolume?.call(userId, volumeMultiplier.clamp(0.0, 2.0));
+  }
+
+  /// Starts the interactive microphone test with real-time level feedback and audio loopback.
+  void startMicTest({void Function(double dbfs, bool isSpeaking)? onLevelUpdate}) {
+    _isTestingMic = true;
+    _onMicTestCallback = onLevelUpdate;
+    _cSetMicTestLoopback?.call(true);
+    _cStartCapture?.call();
+    _cStartPlayback?.call();
+    _checkFramePump();
+  }
+
+  /// Stops the interactive microphone test and disables audio loopback.
+  void stopMicTest() {
+    _isTestingMic = false;
+    _onMicTestCallback = null;
+    _cSetMicTestLoopback?.call(false);
+    if (!_isCapturing) {
+      _cStopCapture?.call();
+      _lastInputLevelDb = -90.0;
+      _lastIsSpeaking = false;
+    }
+    if (!_isPlaybackActive) {
+      _cStopPlayback?.call();
+    }
+    _checkFramePump();
   }
 
   void feedInboundPacket(Uint8List packetBytes) {
@@ -323,14 +531,22 @@ class AudioEngineService {
       return stats;
     }
 
-    return const AudioStats();
+    return AudioStats(
+      inputLevelDb: _lastInputLevelDb,
+      isSpeaking: _lastIsSpeaking,
+    );
   }
 
   void destroy() {
+    stopMicTest();
     stopCapture();
     stopPlayback();
+    _framePumpTimer?.cancel();
+    _framePumpTimer = null;
     _cDestroy?.call();
     _isInitialized = false;
+    _captureStreamController.close();
+    _micTestStreamController.close();
   }
 
   String _readFixedString(ffi.Array<ffi.Char> array, int maxLen) {

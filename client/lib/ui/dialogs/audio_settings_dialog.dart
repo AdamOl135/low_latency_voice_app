@@ -41,24 +41,29 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
     return Dialog(
       backgroundColor: AppTheme.backgroundElevated,
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 540, maxHeight: 680),
+        constraints: const BoxConstraints(maxWidth: 580, maxHeight: 720),
         child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Dialog Header
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Expanded(
-                    child: Text(
-                      'Voice & Audio Settings',
-                      style: TextStyle(
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textPrimary,
+                  const Row(
+                    children: [
+                      Icon(Icons.settings_voice, color: AppTheme.primary, size: 24),
+                      SizedBox(width: 10),
+                      Text(
+                        'Voice & Audio Settings',
+                        style: TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textPrimary,
+                        ),
                       ),
-                    ),
+                    ],
                   ),
                   IconButton(
                     icon: const Icon(Icons.close, color: AppTheme.textMuted),
@@ -70,9 +75,9 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
               Expanded(
                 child: ListView(
                   children: [
-                    // Input Device
+                    // Input Device Selection
                     const Text(
-                      'INPUT DEVICE',
+                      'INPUT DEVICE (MICROPHONE)',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -95,7 +100,28 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                           items: settings.inputDevices.map((dev) {
                             return DropdownMenuItem<AudioDevice>(
                               value: dev,
-                              child: Text(dev.name, style: const TextStyle(color: AppTheme.textPrimary)),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.mic, color: AppTheme.textMuted, size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      dev.name,
+                                      style: const TextStyle(color: AppTheme.textPrimary),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (dev.isDefault)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.primary.withAlpha(50),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: const Text('DEFAULT', style: TextStyle(fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.bold)),
+                                    ),
+                                ],
+                              ),
                             );
                           }).toList(),
                           onChanged: (dev) {
@@ -106,9 +132,9 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Output Device
+                    // Output Device Selection
                     const Text(
-                      'OUTPUT DEVICE',
+                      'OUTPUT DEVICE (SPEAKERS / HEADPHONES)',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -131,7 +157,28 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                           items: settings.outputDevices.map((dev) {
                             return DropdownMenuItem<AudioDevice>(
                               value: dev,
-                              child: Text(dev.name, style: const TextStyle(color: AppTheme.textPrimary)),
+                              child: Row(
+                                children: [
+                                  const Icon(Icons.headphones, color: AppTheme.textMuted, size: 18),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      dev.name,
+                                      style: const TextStyle(color: AppTheme.textPrimary),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                  if (dev.isDefault)
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.primary.withAlpha(50),
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: const Text('DEFAULT', style: TextStyle(fontSize: 10, color: AppTheme.primary, fontWeight: FontWeight.bold)),
+                                    ),
+                                ],
+                              ),
                             );
                           }).toList(),
                           onChanged: (dev) {
@@ -142,9 +189,16 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                     ),
                     const SizedBox(height: 20),
 
-                    // Input Mode
+                    // ==========================================
+                    // MIC TEST SECTION (Feature Deliverable)
+                    // ==========================================
+                    _buildMicTestCard(settings, settingsNotifier),
+
+                    const SizedBox(height: 20),
+
+                    // Input Mode Selection
                     const Text(
-                      'INPUT MODE',
+                      'INPUT ACTIVATION MODE',
                       style: TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
@@ -175,8 +229,8 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(Icons.mic, color: AppTheme.primary, size: 18),
-                                  SizedBox(width: 6),
-                                  Flexible(child: Text('Voice Activity', style: TextStyle(color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+                                  SizedBox(width: 8),
+                                  Flexible(child: Text('Voice Activity', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
                                 ],
                               ),
                             ),
@@ -203,8 +257,8 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(Icons.touch_app, color: AppTheme.primary, size: 18),
-                                  SizedBox(width: 6),
-                                  Flexible(child: Text('Push-to-Talk', style: TextStyle(color: AppTheme.textPrimary), overflow: TextOverflow.ellipsis)),
+                                  SizedBox(width: 8),
+                                  Flexible(child: Text('Push-to-Talk', style: TextStyle(color: AppTheme.textPrimary, fontWeight: FontWeight.w600), overflow: TextOverflow.ellipsis)),
                                 ],
                               ),
                             ),
@@ -214,7 +268,7 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                     ),
                     const SizedBox(height: 20),
 
-                    // VAD Slider or PTT Keybind
+                    // VAD Sensitivity Slider or PTT Keybind
                     if (settings.activationMode == InputActivationMode.voiceActivity) ...[
                       Row(
                         mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -238,12 +292,15 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 4),
                       Slider(
                         value: settings.vadThresholdDb,
                         min: -70.0,
                         max: -10.0,
                         divisions: 60,
-                        label: '${settings.vadThresholdDb.toStringAsFixed(1)} dB',
+                        activeColor: AppTheme.primary,
+                        inactiveColor: AppTheme.backgroundSurface,
+                        label: '${settings.vadThresholdDb.toStringAsFixed(1)} dBFS',
                         onChanged: (val) => settingsNotifier.setVadThreshold(val),
                       ),
                     ] else ...[
@@ -338,7 +395,7 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                 children: [
                   TextButton(
                     onPressed: () => Navigator.of(context).pop(),
-                    child: const Text('Cancel', style: TextStyle(color: AppTheme.textMuted)),
+                    child: const Text('Close', style: TextStyle(color: AppTheme.textMuted)),
                   ),
                   const SizedBox(width: 12),
                   ElevatedButton(
@@ -354,6 +411,157 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
             ],
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildMicTestCard(SettingsState settings, SettingsNotifier settingsNotifier) {
+    final isTesting = settings.isTestingMic;
+    final levelDb = settings.micTestInputLevelDb;
+    final isSpeaking = settings.isMicSpeaking;
+
+    // Normalize level (-70 dBFS to 0 dBFS) into 0.0 to 1.0
+    final normalizedLevel = isTesting
+        ? ((levelDb + 70.0) / 70.0).clamp(0.0, 1.0)
+        : 0.0;
+
+    // Threshold position (normalized)
+    final thresholdPosition = ((settings.vadThresholdDb + 70.0) / 70.0).clamp(0.0, 1.0);
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppTheme.backgroundSurface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: isTesting ? AppTheme.primary.withAlpha(150) : AppTheme.dividerColor,
+          width: 1.5,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'MIC TEST',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textPrimary,
+                        letterSpacing: 0.5,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isTesting
+                          ? 'Audio loopback active. Speak to hear yourself.'
+                          : 'Having mic issues? Test and verify your audio.',
+                      style: const TextStyle(fontSize: 11, color: AppTheme.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              ElevatedButton.icon(
+                key: const Key('mic_test_toggle_button'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: isTesting ? AppTheme.dangerRed : AppTheme.primary,
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                ),
+                icon: Icon(isTesting ? Icons.stop : Icons.mic, size: 16),
+                label: Text(isTesting ? 'Stop Testing' : 'Test Mic'),
+                onPressed: () => settingsNotifier.toggleMicTest(),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+
+          // Animated VU Meter Bar
+          Stack(
+            children: [
+              // Background track
+              Container(
+                height: 16,
+                width: double.infinity,
+                decoration: BoxDecoration(
+                  color: const Color(0xFF1E1F22),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+
+              // Animated Level Bar
+              FractionallySizedBox(
+                widthFactor: normalizedLevel,
+                child: Container(
+                  height: 16,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(4),
+                    gradient: LinearGradient(
+                      colors: isSpeaking
+                          ? [AppTheme.speakingGreen, const Color(0xFF2ECC71), const Color(0xFFF1C40F)]
+                          : [const Color(0xFF4E5058), const Color(0xFF72767D)],
+                    ),
+                  ),
+                ),
+              ),
+
+              // VAD Threshold Marker Line
+              Align(
+                alignment: Alignment((thresholdPosition * 2.0 - 1.0).clamp(-1.0, 1.0), 0.0),
+                child: Container(
+                  width: 2.5,
+                  height: 16,
+                  color: Colors.white.withAlpha(220),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // Level readout and speaking status
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isTesting
+                          ? (isSpeaking ? AppTheme.speakingGreen : AppTheme.warningYellow)
+                          : AppTheme.textMuted,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  Text(
+                    isTesting
+                        ? (isSpeaking
+                            ? 'Voice Detected (Speaking)'
+                            : (levelDb > -80 ? 'Listening for voice...' : 'Quiet / No Input'))
+                        : 'Click "Test Mic" to start testing',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: isTesting && isSpeaking ? AppTheme.speakingGreen : AppTheme.textMuted,
+                      fontWeight: isSpeaking ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ],
+              ),
+              Text(
+                isTesting ? '${levelDb.toStringAsFixed(1)} dBFS' : '- dBFS',
+                style: const TextStyle(fontSize: 11, color: AppTheme.textMuted, fontFamily: 'monospace'),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }

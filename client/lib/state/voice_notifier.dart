@@ -17,6 +17,8 @@ class VoiceStateModel {
   final bool serverMuted;
   final bool serverDeafened;
   final double pingMs;
+  final double localInputLevelDb;
+  final bool isLocalSpeaking;
   final Map<int, bool> speakingUsers; // userId -> isSpeaking
   final Map<int, int> userEnergyLevels; // userId -> energyLevel (0..15)
   final Map<int, double> userVolumes; // userId -> volumeMultiplier (0.0..2.0)
@@ -31,6 +33,8 @@ class VoiceStateModel {
     this.serverMuted = false,
     this.serverDeafened = false,
     this.pingMs = 0.0,
+    this.localInputLevelDb = -90.0,
+    this.isLocalSpeaking = false,
     this.speakingUsers = const {},
     this.userEnergyLevels = const {},
     this.userVolumes = const {},
@@ -50,6 +54,8 @@ class VoiceStateModel {
     bool? serverMuted,
     bool? serverDeafened,
     double? pingMs,
+    double? localInputLevelDb,
+    bool? isLocalSpeaking,
     Map<int, bool>? speakingUsers,
     Map<int, int>? userEnergyLevels,
     Map<int, double>? userVolumes,
@@ -64,6 +70,8 @@ class VoiceStateModel {
       serverMuted: serverMuted ?? this.serverMuted,
       serverDeafened: serverDeafened ?? this.serverDeafened,
       pingMs: pingMs ?? this.pingMs,
+      localInputLevelDb: localInputLevelDb ?? this.localInputLevelDb,
+      isLocalSpeaking: isLocalSpeaking ?? this.isLocalSpeaking,
       speakingUsers: speakingUsers ?? this.speakingUsers,
       userEnergyLevels: userEnergyLevels ?? this.userEnergyLevels,
       userVolumes: userVolumes ?? this.userVolumes,
@@ -94,6 +102,8 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
   StreamSubscription? _wsEventsSub;
   StreamSubscription? _speakingSub;
   StreamSubscription? _rttSub;
+  StreamSubscription? _captureSub;
+  StreamSubscription? _inboundPacketSub;
 
   VoiceNotifier(this._ws, this._voiceClient, this._audioEngine, this._ref)
       : super(const VoiceStateModel()) {
@@ -101,7 +111,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
   }
 
   void _initSubscriptions() {
-    // Fast-path in-band VAD indicators (<30ms)
+    // Fast-path in-band VAD indicators from peers (<30ms)
     _speakingSub = _voiceClient.speakingStateStream.listen((event) {
       final speakingMap = Map<int, bool>.from(state.speakingUsers);
       final energyMap = Map<int, int>.from(state.userEnergyLevels);
@@ -113,6 +123,13 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
         speakingUsers: speakingMap,
         userEnergyLevels: energyMap,
       );
+    });
+
+    // Inbound peer audio packet feeding directly to audio engine mixer
+    _inboundPacketSub = _voiceClient.inboundPacketStream.listen((packet) {
+      if (!state.isDeafened) {
+        _audioEngine.feedInboundPacket(packet.encode());
+      }
     });
 
     // RTT latency telemetry
@@ -190,6 +207,37 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
         _audioEngine.startCapture();
         _audioEngine.startPlayback();
 
+        // Subscribe to captured audio frames and stream over UDP
+        _captureSub?.cancel();
+        _captureSub = _audioEngine.onAudioCaptured.listen((frame) {
+          final isMutedNow = state.isMuted;
+          if (!isMutedNow) {
+            _voiceClient.sendVoiceFrame(
+              opusData: frame.data,
+              isSpeaking: frame.isSpeaking,
+              energyLevel: frame.energyLevel,
+            );
+          }
+
+          // Immediately reflect local speaking state and level in UI
+          final curUserId = _ref.read(authProvider).user?.id;
+          if (curUserId != null) {
+            final speakingMap = Map<int, bool>.from(state.speakingUsers);
+            final energyMap = Map<int, int>.from(state.userEnergyLevels);
+            final activeSpeaking = !isMutedNow && frame.isSpeaking;
+
+            speakingMap[curUserId] = activeSpeaking;
+            energyMap[curUserId] = isMutedNow ? 0 : frame.energyLevel;
+
+            state = state.copyWith(
+              localInputLevelDb: isMutedNow ? -90.0 : frame.inputLevelDb,
+              isLocalSpeaking: activeSpeaking,
+              speakingUsers: speakingMap,
+              userEnergyLevels: energyMap,
+            );
+          }
+        });
+
         _ref.read(channelsProvider.notifier).setConnectedVoiceChannel(channelId);
 
         state = state.copyWith(
@@ -212,6 +260,9 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
       await _ws.leaveVoice();
     } catch (_) {}
 
+    _captureSub?.cancel();
+    _captureSub = null;
+
     await _voiceClient.disconnect();
     _audioEngine.stopCapture();
     _audioEngine.stopPlayback();
@@ -224,6 +275,8 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
       connectedChannelName: null,
       speakingUsers: {},
       userEnergyLevels: {},
+      localInputLevelDb: -90.0,
+      isLocalSpeaking: false,
       pingMs: 0.0,
     );
   }
@@ -271,6 +324,8 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
 
   @override
   void dispose() {
+    _captureSub?.cancel();
+    _inboundPacketSub?.cancel();
     _wsEventsSub?.cancel();
     _speakingSub?.cancel();
     _rttSub?.cancel();

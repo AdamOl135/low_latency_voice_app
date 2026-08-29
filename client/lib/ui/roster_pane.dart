@@ -115,7 +115,9 @@ class RosterPane extends ConsumerWidget {
     final voiceState = ref.watch(voiceProvider);
     final voiceNotifier = ref.read(voiceProvider.notifier);
     final memberVoice = ref.watch(rosterProvider).getVoiceState(member.userId);
-    final isSpeaking = voiceState.speakingUsers[member.userId] == true;
+    final currentUser = ref.watch(authProvider).user;
+    final isSpeaking = (voiceState.speakingUsers[member.userId] == true) ||
+        (member.userId == currentUser?.id && voiceState.isLocalSpeaking && !voiceState.isMuted);
 
     final userVolume = voiceState.userVolumes[member.userId] ?? 1.0;
 

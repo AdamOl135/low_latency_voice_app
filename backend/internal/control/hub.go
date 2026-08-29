@@ -166,6 +166,10 @@ func (h *Hub) handleClientDisconnect(client *Client) {
 					delete(h.voiceChannels, departedVoiceChannel)
 				}
 			}
+		}
+
+		// If this client had active voice or user has no active sessions, clean up voice state
+		if client.activeVoiceChannel > 0 || len(h.userClients[userID]) == 0 {
 			delete(h.voiceStates, userID)
 		}
 	}
