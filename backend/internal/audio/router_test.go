@@ -1,0 +1,251 @@
+package audio
+
+import (
+	"bytes"
+	"net"
+	"sync"
+	"testing"
+)
+
+type mockPacketWriter struct {
+	mu      sync.Mutex
+	packets map[string][][]byte
+}
+
+func newMockPacketWriter() *mockPacketWriter {
+	return &mockPacketWriter{
+		packets: make(map[string][][]byte),
+	}
+}
+
+func (w *mockPacketWriter) WriteTo(p []byte, addr net.Addr) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	cp := make([]byte, len(p))
+	copy(cp, p)
+	key := addr.String()
+	w.packets[key] = append(w.packets[key], cp)
+	return len(p), nil
+}
+
+func (w *mockPacketWriter) getPackets(addr net.Addr) [][]byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.packets[addr.String()]
+}
+
+func (w *mockPacketWriter) clear() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.packets = make(map[string][][]byte)
+}
+
+type mockVADNotifier struct {
+	mu     sync.Mutex
+	events []vadEvent
+}
+
+type vadEvent struct {
+	channelID uint32
+	userID    uint32
+	speaking  bool
+	energy    uint8
+}
+
+func (n *mockVADNotifier) BroadcastVoiceState(channelID uint32, userID uint32, speaking bool, energy uint8) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.events = append(n.events, vadEvent{channelID, userID, speaking, energy})
+}
+
+func (n *mockVADNotifier) getEvents() []vadEvent {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	cp := make([]vadEvent, len(n.events))
+	copy(cp, n.events)
+	return cp
+}
+
+func TestRouterPingPongProbe(t *testing.T) {
+	writer := newMockPacketWriter()
+	router := NewRouter(nil, nil, nil, writer)
+
+	clientAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40001")
+	pingPayload := []byte{0xDE, 0xAD, 0xBE, 0xEF, 0x01, 0x02, 0x03, 0x04}
+
+	pingPkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypePing,
+		SenderID:    101,
+		ChannelID:   1,
+		Sequence:    77,
+		Timestamp:   48000,
+		PayloadLen:  uint16(len(pingPayload)),
+		Payload:     pingPayload,
+	}
+
+	rawPing := pingPkt.Encode()
+	err := router.HandlePacket(rawPing, clientAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket(ping) failed: %v", err)
+	}
+
+	pkts := writer.getPackets(clientAddr)
+	if len(pkts) != 1 {
+		t.Fatalf("expected 1 pong response, got %d", len(pkts))
+	}
+
+	pongPkt, err := Decode(pkts[0])
+	if err != nil {
+		t.Fatalf("failed to decode pong: %v", err)
+	}
+
+	if pongPkt.Type != TypePong {
+		t.Errorf("expected type TypePong (0x03), got 0x%02X", pongPkt.Type)
+	}
+	if pongPkt.Sequence != 77 {
+		t.Errorf("expected sequence 77, got %d", pongPkt.Sequence)
+	}
+	if pongPkt.Timestamp != 48000 {
+		t.Errorf("expected timestamp 48000, got %d", pongPkt.Timestamp)
+	}
+	if !bytes.Equal(pongPkt.Payload, pingPayload) {
+		t.Errorf("pong payload mismatch: got %v, expected %v", pongPkt.Payload, pingPayload)
+	}
+}
+
+func TestRouterSFUSelectiveForwarding(t *testing.T) {
+	writer := newMockPacketWriter()
+	notifier := &mockVADNotifier{}
+	sm := NewSessionManager()
+	router := NewRouter(sm, nil, notifier, writer)
+
+	aliceAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:50001")
+	bobAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:50002")
+	charlieAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:50003") // In different channel 102
+
+	aliceSess := NewSession(1, 101, 1001, aliceAddr)
+	bobSess := NewSession(2, 101, 1002, bobAddr)
+	charlieSess := NewSession(3, 102, 1003, charlieAddr)
+
+	sm.RegisterSession(aliceSess)
+	sm.RegisterSession(bobSess)
+	sm.RegisterSession(charlieSess)
+
+	// Alice sends audio frame in channel 101
+	audioPayload := make([]byte, 80)
+	for i := range audioPayload {
+		audioPayload[i] = byte(i)
+	}
+
+	voicePkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		VAD:         true,
+		EnergyLevel: 14,
+		SenderID:    1,
+		ChannelID:   101,
+		Sequence:    1,
+		Timestamp:   960,
+		Payload:     audioPayload,
+	}
+
+	rawVoice := voicePkt.Encode()
+	err := router.HandlePacket(rawVoice, aliceAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket(voice) failed: %v", err)
+	}
+
+	// 1. Bob (peer in 101) must receive the packet
+	bobPkts := writer.getPackets(bobAddr)
+	if len(bobPkts) != 1 {
+		t.Fatalf("expected Bob to receive 1 packet, got %d", len(bobPkts))
+	}
+	if !bytes.Equal(bobPkts[0], rawVoice) {
+		t.Errorf("forwarded packet content mismatch")
+	}
+
+	// 2. Alice (sender) must NOT receive her own packet (no self-echo)
+	alicePkts := writer.getPackets(aliceAddr)
+	if len(alicePkts) != 0 {
+		t.Errorf("expected Alice to receive 0 packets (no self-echo), got %d", len(alicePkts))
+	}
+
+	// 3. Charlie (in channel 102) must NOT receive packet (channel isolation)
+	charliePkts := writer.getPackets(charlieAddr)
+	if len(charliePkts) != 0 {
+		t.Errorf("expected Charlie in 102 to receive 0 packets (channel isolation), got %d", len(charliePkts))
+	}
+
+	// 4. VAD Notifier must receive state transition event
+	events := notifier.getEvents()
+	if len(events) != 1 {
+		t.Fatalf("expected 1 VAD event, got %d", len(events))
+	}
+	if events[0].userID != 1 || events[0].channelID != 101 || !events[0].speaking || events[0].energy != 14 {
+		t.Errorf("unexpected VAD event: %+v", events[0])
+	}
+}
+
+func TestRouterServerMuteAndDeafenGating(t *testing.T) {
+	writer := newMockPacketWriter()
+	sm := NewSessionManager()
+	router := NewRouter(sm, nil, nil, writer)
+
+	aliceAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:51001")
+	bobAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:51002")
+	charlieAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:51003")
+
+	aliceSess := NewSession(1, 101, 1001, aliceAddr)
+	bobSess := NewSession(2, 101, 1002, bobAddr)
+	charlieSess := NewSession(3, 101, 1003, charlieAddr)
+
+	sm.RegisterSession(aliceSess)
+	sm.RegisterSession(bobSess)
+	sm.RegisterSession(charlieSess)
+
+	// Case 1: Bob is server-deafened (Egress Deafen Gating)
+	bobSess.SetServerDeafen(true)
+
+	voicePkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		VAD:         true,
+		EnergyLevel: 10,
+		SenderID:    1,
+		ChannelID:   101,
+		Sequence:    1,
+		Timestamp:   960,
+		Payload:     []byte{1, 2, 3},
+	}
+
+	err := router.HandlePacket(voicePkt.Encode(), aliceAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket failed: %v", err)
+	}
+
+	// Charlie should receive, but deafened Bob should NOT
+	if len(writer.getPackets(bobAddr)) != 0 {
+		t.Errorf("deafened Bob should receive 0 packets, got %d", len(writer.getPackets(bobAddr)))
+	}
+	if len(writer.getPackets(charlieAddr)) != 1 {
+		t.Errorf("Charlie should receive 1 packet, got %d", len(writer.getPackets(charlieAddr)))
+	}
+
+	// Case 2: Alice is server-muted (Ingress Mute Gating)
+	writer.clear()
+	aliceSess.SetServerMute(true)
+
+	err = router.HandlePacket(voicePkt.Encode(), aliceAddr)
+	if err != ErrUserServerMuted {
+		t.Errorf("expected ErrUserServerMuted, got %v", err)
+	}
+
+	// Nobody should receive audio from muted Alice
+	if len(writer.getPackets(charlieAddr)) != 0 {
+		t.Errorf("Charlie should receive 0 packets from muted Alice, got %d", len(writer.getPackets(charlieAddr)))
+	}
+}

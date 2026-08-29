@@ -1,0 +1,32 @@
+services:
+  voice-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: low_latency_voice_backend
+    restart: unless-stopped
+    ports:
+      # HTTP / WebSocket Control Plane (JSON-RPC)
+      - "8080:8080/tcp"
+      # Ultra-Low-Latency UDP Voice SFU Plane
+      - "7878:7878/udp"
+    volumes:
+      # Persistent SQLite WAL database and configuration
+      - ./data:/app/data
+    environment:
+      - PORT=8080
+      - UDP_PORT=7878
+      - DB_PATH=/app/data/voiceapp.db
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Zero-NAT and Tailscale mesh network compatibility:
+    # Direct port binding allows Tailscale IP (100.x.y.z) routing without complex NAT or proxy
