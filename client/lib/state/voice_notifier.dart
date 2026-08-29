@@ -114,6 +114,9 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
   void _initSubscriptions() {
     // Fast-path in-band VAD indicators from peers (<30ms)
     _speakingSub = _voiceClient.speakingStateStream.listen((event) {
+      final currentUserId = _ref.read(authProvider).user?.id;
+      if (event.userId == currentUserId || event.userId == 0) return;
+
       final speakingMap = Map<int, bool>.from(state.speakingUsers);
       final energyMap = Map<int, int>.from(state.userEnergyLevels);
 
@@ -128,6 +131,9 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
 
     // Inbound peer audio packet feeding directly to audio engine mixer
     _inboundPacketSub = _voiceClient.inboundPacketStream.listen((packet) {
+      final currentUserId = _ref.read(authProvider).user?.id;
+      if (packet.senderId == currentUserId || packet.senderId == 0) return;
+
       if (!state.isDeafened) {
         _audioEngine.feedInboundPacket(packet.encode());
       }
@@ -147,18 +153,45 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
 
       if (eventType == 'voice_state_update') {
         final userId = data['user_id'] as int?;
-        if (userId == currentUserId) {
-          final serverMuted = data['server_muted'] == true;
-          final serverDeafened = data['server_deafened'] == true;
-          final channelId = data['channel_id'] as int?;
+        if (userId != null) {
+          if (userId == currentUserId) {
+            final serverMuted = data['server_muted'] == true;
+            final serverDeafened = data['server_deafened'] == true;
+            final channelId = data['channel_id'] as int?;
 
-          state = state.copyWith(
-            serverMuted: serverMuted,
-            serverDeafened: serverDeafened,
-          );
+            state = state.copyWith(
+              serverMuted: serverMuted,
+              serverDeafened: serverDeafened,
+            );
 
-          if (channelId == null && state.isConnected) {
-            disconnect();
+            if (channelId == null && state.isConnected) {
+              disconnect();
+            }
+          } else {
+            // Control plane fallback for peer speaking state
+            final channelId = data['channel_id'];
+            if (channelId == null || channelId == 0) {
+              // User left voice channel
+              final speakingMap = Map<int, bool>.from(state.speakingUsers)..remove(userId);
+              final energyMap = Map<int, int>.from(state.userEnergyLevels)..remove(userId);
+              state = state.copyWith(
+                speakingUsers: speakingMap,
+                userEnergyLevels: energyMap,
+              );
+            } else if (data.containsKey('is_speaking') || data.containsKey('speaking')) {
+              final isSpk = data['is_speaking'] == true || data['speaking'] == true;
+              final energy = (data['energy'] is int)
+                  ? data['energy'] as int
+                  : ((data['energy_level'] is int) ? data['energy_level'] as int : (isSpk ? 10 : 0));
+              final speakingMap = Map<int, bool>.from(state.speakingUsers);
+              final energyMap = Map<int, int>.from(state.userEnergyLevels);
+              speakingMap[userId] = isSpk;
+              energyMap[userId] = energy;
+              state = state.copyWith(
+                speakingUsers: speakingMap,
+                userEnergyLevels: energyMap,
+              );
+            }
           }
         }
       } else if (eventType == 'member_moved') {
@@ -181,10 +214,16 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
         ? host
         : _ref.read(settingsProvider).serverHost;
 
+    // Ensure mic test is stopped and peer streams are clean
+    _audioEngine.stopMicTest();
+    _audioEngine.clearPeers();
+
     state = state.copyWith(
       status: VoiceConnectionStatus.connecting,
       connectedChannelId: channelId,
       connectedChannelName: channelName,
+      speakingUsers: {},
+      userEnergyLevels: {},
       errorMessage: null,
     );
 
@@ -271,6 +310,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
     await _voiceClient.disconnect();
     _audioEngine.stopCapture();
     _audioEngine.stopPlayback();
+    _audioEngine.clearPeers();
 
     _ref.read(channelsProvider.notifier).setConnectedVoiceChannel(null);
 

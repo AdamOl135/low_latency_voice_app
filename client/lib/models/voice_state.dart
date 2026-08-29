@@ -37,18 +37,23 @@ class VoiceState {
       chId = json['channel_id'] as int;
     }
 
+    final isSpeaking = json['is_speaking'] == true || json['speaking'] == true;
+    final energy = (json['energy_level'] is int)
+        ? json['energy_level'] as int
+        : ((json['energy'] is int) ? json['energy'] as int : 0);
+
     return VoiceState(
       userId: json['user_id'] is int
           ? json['user_id'] as int
           : (json['id'] is int ? json['id'] as int : 0),
       username: (json['username'] as String?) ?? '',
       channelId: chId,
-      isSpeaking: json['is_speaking'] == true,
+      isSpeaking: isSpeaking,
       selfMuted: json['self_muted'] == true,
       selfDeafened: json['self_deafened'] == true,
       serverMuted: json['server_muted'] == true,
       serverDeafened: json['server_deafened'] == true,
-      energyLevel: (json['energy_level'] is int) ? json['energy_level'] as int : 0,
+      energyLevel: energy,
     );
   }
 

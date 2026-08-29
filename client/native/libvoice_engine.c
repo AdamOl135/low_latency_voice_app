@@ -456,8 +456,9 @@ VOICE_API void voice_engine_set_local_deafen(bool deafened) {
 }
 
 VOICE_API void voice_engine_set_user_volume(uint32_t user_id, float volume_multiplier) {
+    if (user_id == 0) return;
     enter_cs();
-    for (int i = 0; i < MAX_PEERS; i++) {
+    for (int i = 1; i < MAX_PEERS; i++) {
         if (g_peers[i].is_active && g_peers[i].user_id == user_id) {
             g_peers[i].user_volume = volume_multiplier;
             leave_cs();
@@ -465,8 +466,8 @@ VOICE_API void voice_engine_set_user_volume(uint32_t user_id, float volume_multi
         }
     }
 
-    // Allocate new peer slot
-    for (int i = 0; i < MAX_PEERS; i++) {
+    // Allocate new peer slot (reserve slot 0 for mic test loopback)
+    for (int i = 1; i < MAX_PEERS; i++) {
         if (!g_peers[i].is_active) {
             g_peers[i].user_id = user_id;
             g_peers[i].is_active = true;
@@ -476,6 +477,19 @@ VOICE_API void voice_engine_set_user_volume(uint32_t user_id, float volume_multi
             leave_cs();
             return;
         }
+    }
+    leave_cs();
+}
+
+VOICE_API void voice_engine_clear_peers(void) {
+    enter_cs();
+    for (int i = 1; i < MAX_PEERS; i++) {
+        g_peers[i].user_id = 0;
+        g_peers[i].is_active = false;
+        g_peers[i].is_speaking = false;
+        g_peers[i].user_volume = 1.0f;
+        g_peers[i].read_idx = 0;
+        g_peers[i].write_idx = 0;
     }
     leave_cs();
 }
@@ -525,6 +539,8 @@ VOICE_API void voice_engine_feed_inbound_packet(const uint8_t* packet_bytes, uin
                          ((uint32_t)packet_bytes[5] << 16) |
                          ((uint32_t)packet_bytes[6] << 8)  |
                          ((uint32_t)packet_bytes[7]);
+
+    if (sender_id == 0) return;
 
     uint16_t payload_len = ((uint16_t)packet_bytes[14] << 8) | ((uint16_t)packet_bytes[15]);
     if (length < (uint32_t)(20 + payload_len)) return;

@@ -246,5 +246,28 @@ void main() {
       final encoded = packet.encode();
       expect(() => engine.feedInboundPacket(encoded), returnsNormally);
     });
+
+    test('clearPeers flushes peer mixer buffers without error', () {
+      expect(() => engine.clearPeers(), returnsNormally);
+    });
+  });
+
+  group('Voice Client State & Self Filtering Tests', () {
+    late VoiceClient voiceClient;
+
+    setUp(() {
+      voiceClient = VoiceClient();
+    });
+
+    tearDown(() {
+      voiceClient.dispose();
+    });
+
+    test('VoiceClient initializes and disconnects cleanly', () async {
+      expect(voiceClient.isConnected, isFalse);
+      expect(voiceClient.lastRttMs, equals(0.0));
+      await voiceClient.disconnect();
+      expect(voiceClient.isConnected, isFalse);
+    });
   });
 }

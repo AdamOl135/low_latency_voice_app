@@ -155,6 +155,26 @@ void main() {
       expect(container.read(voiceProvider).selfDeafened, isTrue);
       expect(container.read(voiceProvider).selfMuted, isTrue);
     });
+
+    test('setUserVolume adjusts volume map for specific peer', () {
+      final voiceNotifier = container.read(voiceProvider.notifier);
+      voiceNotifier.setUserVolume(42, 1.5);
+      expect(container.read(voiceProvider).userVolumes[42], equals(1.5));
+
+      voiceNotifier.setUserVolume(42, 3.0); // Clamped to 2.0
+      expect(container.read(voiceProvider).userVolumes[42], equals(2.0));
+    });
+
+    test('disconnect resets speakingUsers and clears connection state', () async {
+      final voiceNotifier = container.read(voiceProvider.notifier);
+      await voiceNotifier.disconnect();
+
+      final state = container.read(voiceProvider);
+      expect(state.status, equals(VoiceConnectionStatus.disconnected));
+      expect(state.speakingUsers, isEmpty);
+      expect(state.userEnergyLevels, isEmpty);
+      expect(state.connectedChannelId, isNull);
+    });
   });
 
   group('Settings State Notifier & Mic Test Tests', () {

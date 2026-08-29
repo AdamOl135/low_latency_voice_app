@@ -67,6 +67,7 @@ VOICE_API void voice_engine_set_vad_mode(bool enabled, float threshold_db);
 VOICE_API void voice_engine_set_local_mute(bool muted);
 VOICE_API void voice_engine_set_local_deafen(bool deafened);
 VOICE_API void voice_engine_set_user_volume(uint32_t user_id, float volume_multiplier);
+VOICE_API void voice_engine_clear_peers(void);
 
 // Microphone Testing & Real-time Feedback
 VOICE_API void voice_engine_set_mic_test_loopback(bool enabled);

@@ -91,6 +91,9 @@ typedef _SetVadModeDart = void Function(bool, double);
 typedef _SetUserVolumeNative = ffi.Void Function(ffi.Uint32, ffi.Float);
 typedef _SetUserVolumeDart = void Function(int, double);
 
+typedef _ClearPeersNative = ffi.Void Function();
+typedef _ClearPeersDart = void Function();
+
 typedef _FeedInboundPacketNative = ffi.Void Function(ffi.Pointer<ffi.Uint8>, ffi.Uint32);
 typedef _FeedInboundPacketDart = void Function(ffi.Pointer<ffi.Uint8>, int);
 
@@ -152,6 +155,7 @@ class AudioEngineService {
   _SetBoolDart? _cSetLocalMute;
   _SetBoolDart? _cSetLocalDeafen;
   _SetUserVolumeDart? _cSetUserVolume;
+  _ClearPeersDart? _cClearPeers;
   _SetBoolDart? _cSetMicTestLoopback;
   _GetBoolDart? _cIsMicTestActive;
   _GetFloatDart? _cGetInputLevelDb;
@@ -213,6 +217,7 @@ class AudioEngineService {
         _cSetLocalMute = _dylib!.lookupFunction<_SetBoolNative, _SetBoolDart>('voice_engine_set_local_mute');
         _cSetLocalDeafen = _dylib!.lookupFunction<_SetBoolNative, _SetBoolDart>('voice_engine_set_local_deafen');
         _cSetUserVolume = _dylib!.lookupFunction<_SetUserVolumeNative, _SetUserVolumeDart>('voice_engine_set_user_volume');
+        _cClearPeers = _dylib!.lookupFunction<_ClearPeersNative, _ClearPeersDart>('voice_engine_clear_peers');
         _cSetMicTestLoopback = _dylib!.lookupFunction<_SetBoolNative, _SetBoolDart>('voice_engine_set_mic_test_loopback');
         _cIsMicTestActive = _dylib!.lookupFunction<_GetBoolNative, _GetBoolDart>('voice_engine_is_mic_test_active');
         _cGetInputLevelDb = _dylib!.lookupFunction<_GetFloatNative, _GetFloatDart>('voice_engine_get_input_level_db');
@@ -477,6 +482,11 @@ class AudioEngineService {
 
   void setUserVolume(int userId, double volumeMultiplier) {
     _cSetUserVolume?.call(userId, volumeMultiplier.clamp(0.0, 2.0));
+  }
+
+  /// Clears all inbound peer audio streams and reset peer mixers.
+  void clearPeers() {
+    _cClearPeers?.call();
   }
 
   /// Starts the interactive microphone test with real-time level feedback and audio loopback.

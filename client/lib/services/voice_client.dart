@@ -149,6 +149,10 @@ class VoiceClient {
   }) async {
     await disconnect();
 
+    _userId = userId;
+    _channelId = channelId;
+    _serverPort = port;
+
     final parsed = InternetAddress.tryParse(host);
     if (parsed != null) {
       _serverAddress = parsed;
@@ -195,6 +199,11 @@ class VoiceClient {
 
       switch (packet.type) {
         case AppConstants.packetTypeVoice:
+          // Ignore own voice packets if looped back or sent by self
+          if (packet.senderId == _userId || packet.senderId == 0) {
+            return;
+          }
+
           // Fast-Path: In-band VAD & energy notification (<30ms)
           _speakingStateController.add((
             userId: packet.senderId,
