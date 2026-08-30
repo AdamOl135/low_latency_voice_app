@@ -97,10 +97,12 @@ class RosterNotifier extends StateNotifier<RosterState> {
       } else if (eventType == 'member_joined') {
         fetchRoster();
       } else if (eventType == 'member_kicked') {
-        final kickedId = data['user_id'] as int?;
+        final kickedId = (data['user_id'] is int) ? data['user_id'] as int : null;
         if (kickedId != null) {
+          final updatedStates = Map<int, VoiceState>.from(state.voiceStates)..remove(kickedId);
           state = state.copyWith(
             members: state.members.where((m) => m.userId != kickedId).toList(),
+            voiceStates: updatedStates,
           );
         }
       }
@@ -178,8 +180,10 @@ class RosterNotifier extends StateNotifier<RosterState> {
   Future<bool> kickMember(int targetUserId, {String reason = 'Kicked by moderator'}) async {
     try {
       await _ws.kickMember(targetUserId, reason: reason);
+      final updatedStates = Map<int, VoiceState>.from(state.voiceStates)..remove(targetUserId);
       state = state.copyWith(
         members: state.members.where((m) => m.userId != targetUserId).toList(),
+        voiceStates: updatedStates,
       );
       return true;
     } catch (e) {

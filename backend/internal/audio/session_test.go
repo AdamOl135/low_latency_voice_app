@@ -152,3 +152,31 @@ func TestSessionPendingActivation(t *testing.T) {
 		t.Errorf("expected ErrUnauthorizedSession on replay, got %v", err)
 	}
 }
+
+func TestSessionManagerTokenRevocation(t *testing.T) {
+	sm := NewSessionManager()
+
+	token := "pending_token_user_10"
+	expires := time.Now().Add(10 * time.Second)
+	sm.RegisterPending(token, 10, 101, 8888, expires)
+
+	addr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:45678")
+
+	// Revoke via RemoveSession (e.g. user kick / leave)
+	sm.RemoveSession(10)
+
+	// Activating revoked pending token must fail
+	_, err := sm.ActivatePending(token, 10, 101, addr)
+	if err != ErrUnauthorizedSession {
+		t.Errorf("expected ErrUnauthorizedSession after RemoveSession revocation, got %v", err)
+	}
+
+	// Test RevokePending explicitly
+	token2 := "pending_token_user_11"
+	sm.RegisterPending(token2, 11, 101, 7777, expires)
+	sm.RevokePending(11)
+	_, err = sm.ActivatePending(token2, 11, 101, addr)
+	if err != ErrUnauthorizedSession {
+		t.Errorf("expected ErrUnauthorizedSession after RevokePending, got %v", err)
+	}
+}

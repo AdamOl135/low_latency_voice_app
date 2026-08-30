@@ -249,3 +249,94 @@ func TestRouterServerMuteAndDeafenGating(t *testing.T) {
 		t.Errorf("Charlie should receive 0 packets from muted Alice, got %d", len(writer.getPackets(charlieAddr)))
 	}
 }
+
+func TestRouterSelectiveForwardingPCMFrame(t *testing.T) {
+	sm := NewSessionManager()
+	writer := newMockPacketWriter()
+	notifier := &mockVADNotifier{}
+	router := NewRouter(sm, nil, notifier, writer)
+
+	aliceAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40001")
+	bobAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40002")
+	charlieAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40003")
+
+	aliceSess := NewSession(1, 101, 1001, aliceAddr)
+	bobSess := NewSession(2, 101, 1002, bobAddr)
+	charlieSess := NewSession(3, 102, 1003, charlieAddr) // Channel 102
+
+	sm.RegisterSession(aliceSess)
+	sm.RegisterSession(bobSess)
+	sm.RegisterSession(charlieSess)
+
+	// 1920-byte PCM frame
+	pcmPayload := make([]byte, 1920)
+	for i := range pcmPayload {
+		pcmPayload[i] = byte((i * 3) % 256)
+	}
+
+	voicePkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		VAD:         true,
+		EnergyLevel: 14,
+		SenderID:    1,
+		ChannelID:   101,
+		Sequence:    100,
+		Timestamp:   48000,
+		PayloadLen:  uint16(len(pcmPayload)),
+		Payload:     pcmPayload,
+	}
+
+	rawPCM := voicePkt.Encode()
+	if len(rawPCM) != 1940 {
+		t.Fatalf("expected raw PCM packet length 1940, got %d", len(rawPCM))
+	}
+
+	err := router.HandlePacket(rawPCM, aliceAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket failed for PCM frame: %v", err)
+	}
+
+	// 1. Bob in channel 101 must receive the 1940-byte packet
+	bobPkts := writer.getPackets(bobAddr)
+	if len(bobPkts) != 1 {
+		t.Fatalf("expected Bob to receive 1 packet, got %d", len(bobPkts))
+	}
+	if len(bobPkts[0]) != 1940 {
+		t.Errorf("expected Bob packet size 1940, got %d", len(bobPkts[0]))
+	}
+	decodedBob, err := Decode(bobPkts[0])
+	if err != nil {
+		t.Fatalf("failed to decode Bob's packet: %v", err)
+	}
+	if decodedBob.VAD != true || decodedBob.EnergyLevel != 14 {
+		t.Errorf("Bob packet VAD/Energy mismatch: VAD=%v, Energy=%d", decodedBob.VAD, decodedBob.EnergyLevel)
+	}
+	if !bytes.Equal(decodedBob.Payload, pcmPayload) {
+		t.Errorf("Bob packet payload corrupted")
+	}
+
+	// 2. Alice (sender) must receive 0 packets (no self-echo)
+	alicePkts := writer.getPackets(aliceAddr)
+	if len(alicePkts) != 0 {
+		t.Errorf("Alice received %d packets, expected 0 (self-echo)", len(alicePkts))
+	}
+
+	// 3. Charlie (channel 102) must receive 0 packets (channel isolation)
+	charliePkts := writer.getPackets(charlieAddr)
+	if len(charliePkts) != 0 {
+		t.Errorf("Charlie in channel 102 received %d packets, expected 0", len(charliePkts))
+	}
+
+	// 4. VAD notification dispatched for Alice
+	events := notifier.getEvents()
+	if len(events) == 0 {
+		t.Errorf("expected VAD events to be broadcasted, got 0")
+	} else {
+		lastEvent := events[len(events)-1]
+		if lastEvent.userID != 1 || !lastEvent.speaking || lastEvent.energy != 14 {
+			t.Errorf("unexpected VAD event: %+v", lastEvent)
+		}
+	}
+}

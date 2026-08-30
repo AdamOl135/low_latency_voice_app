@@ -16,11 +16,13 @@ class AudioSettingsDialog extends ConsumerStatefulWidget {
 class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
   late TextEditingController _hostController;
   late TextEditingController _portController;
+  late final SettingsNotifier _settingsNotifier;
   bool _isListeningForHotkey = false;
 
   @override
   void initState() {
     super.initState();
+    _settingsNotifier = ref.read(settingsProvider.notifier);
     final settings = ref.read(settingsProvider);
     _hostController = TextEditingController(text: settings.serverHost);
     _portController = TextEditingController(text: settings.serverWsPort.toString());
@@ -28,6 +30,11 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
 
   @override
   void dispose() {
+    Future.microtask(() {
+      if (_settingsNotifier.mounted) {
+        _settingsNotifier.stopMicTest();
+      }
+    });
     _hostController.dispose();
     _portController.dispose();
     super.dispose();
@@ -35,13 +42,15 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
 
   @override
   Widget build(BuildContext context) {
-    final settings = ref.watch(settingsProvider);
-    final settingsNotifier = ref.read(settingsProvider.notifier);
+    return Consumer(
+      builder: (context, ref, _) {
+        final settings = ref.watch(settingsProvider);
+        final settingsNotifier = ref.read(settingsProvider.notifier);
 
-    return Dialog(
-      backgroundColor: AppTheme.backgroundElevated,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 580, maxHeight: 720),
+        return Dialog(
+          backgroundColor: AppTheme.backgroundElevated,
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 580, maxHeight: 720),
         child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
@@ -413,7 +422,9 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
         ),
       ),
     );
-  }
+  },
+);
+}
 
   Widget _buildMicTestCard(SettingsState settings, SettingsNotifier settingsNotifier) {
     final isTesting = settings.isTestingMic;

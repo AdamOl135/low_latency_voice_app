@@ -122,6 +122,11 @@ class ChannelsNotifier extends StateNotifier<ChannelsState> {
         if (userId != null) {
           _updateVoiceOccupant(userId, toChannelId);
         }
+      } else if (eventType == 'member_kicked') {
+        final kickedId = (data['user_id'] is int) ? data['user_id'] as int : null;
+        if (kickedId != null) {
+          _updateVoiceOccupant(kickedId, null);
+        }
       }
     });
   }

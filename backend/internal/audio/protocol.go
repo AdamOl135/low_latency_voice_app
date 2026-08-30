@@ -14,11 +14,11 @@ const (
 	// ProtocolVersion defines the current wire protocol version (0x01).
 	ProtocolVersion = 0x01
 
-	// MaxPayloadSize defines the maximum supported payload length in bytes (MTU 1500 - Header 20).
-	MaxPayloadSize = 1480
+	// MaxPayloadSize defines the maximum supported payload length in bytes (4096 - Header 20).
+	MaxPayloadSize = 4076
 
-	// MaxPacketSize is the maximum datagram size (1500 bytes).
-	MaxPacketSize = 1500
+	// MaxPacketSize is the maximum datagram size (4096 bytes).
+	MaxPacketSize = 4096
 
 	// DefaultPort is the standard UDP audio listening port.
 	DefaultPort = 7878
@@ -45,7 +45,7 @@ var (
 	ErrInvalidVersion        = errors.New("audio: unsupported protocol version")
 	ErrInvalidType           = errors.New("audio: unknown packet type")
 	ErrPayloadLengthMismatch = errors.New("audio: payload length does not match header length")
-	ErrPayloadTooLarge       = errors.New("audio: payload exceeds maximum supported MTU size")
+	ErrPayloadTooLarge       = errors.New("audio: payload exceeds maximum supported MTU size (4076 bytes)")
 	ErrSessionNotFound       = errors.New("audio: voice session not found")
 	ErrUnauthorizedSession   = errors.New("audio: unauthorized or invalid voice token")
 	ErrUserServerMuted       = errors.New("audio: user is server-muted")

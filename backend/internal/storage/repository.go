@@ -61,4 +61,5 @@ type Repository interface {
 	CreateVoiceToken(token string, userID, channelID, ssrc uint32, expiresAt time.Time) (*model.VoiceToken, error)
 	GetVoiceToken(token string) (*model.VoiceToken, error)
 	ConsumeVoiceToken(token string) (*model.VoiceToken, error)
+	RevokeVoiceTokens(userID uint32) error
 }

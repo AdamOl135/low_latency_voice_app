@@ -62,7 +62,7 @@ func Test15ConcurrentVoiceStreams(t *testing.T) {
 
 		go func(c *net.UDPConn, uid uint32) {
 			defer wgRecv.Done()
-			buf := make([]byte, 1500)
+			buf := make([]byte, MaxPacketSize)
 			_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 			for {

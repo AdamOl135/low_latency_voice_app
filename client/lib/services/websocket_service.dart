@@ -105,12 +105,38 @@ class WebSocketService {
   }
 
   void _onError(dynamic error) {
+    final closeCode = _channel?.closeCode;
+    final closeReason = _channel?.closeReason ?? 'Kicked by administrator';
     _cleanupConnection();
+
+    if (closeCode == 4001) {
+      _reconnectTimer?.cancel();
+      _eventController.add({
+        'event': 'kick_disconnect',
+        'close_code': 4001,
+        'reason': closeReason,
+      });
+      return;
+    }
+
     _scheduleReconnect();
   }
 
   void _onDisconnected() {
+    final closeCode = _channel?.closeCode;
+    final closeReason = _channel?.closeReason ?? 'Kicked by administrator';
     _cleanupConnection();
+
+    if (closeCode == 4001) {
+      _reconnectTimer?.cancel();
+      _eventController.add({
+        'event': 'kick_disconnect',
+        'close_code': 4001,
+        'reason': closeReason,
+      });
+      return;
+    }
+
     _scheduleReconnect();
   }
 

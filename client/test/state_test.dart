@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:low_latency_voice_app/core/constants.dart';
 import 'package:low_latency_voice_app/models/audio_device.dart';
 import 'package:low_latency_voice_app/models/role.dart';
+import 'package:low_latency_voice_app/models/user.dart';
 import 'package:low_latency_voice_app/models/voice_state.dart';
 import 'package:low_latency_voice_app/services/audio_engine.dart';
 import 'package:low_latency_voice_app/services/ptt_service.dart';
@@ -12,6 +13,7 @@ import 'package:low_latency_voice_app/services/websocket_service.dart';
 import 'package:low_latency_voice_app/state/auth_notifier.dart';
 import 'package:low_latency_voice_app/state/channels_notifier.dart';
 import 'package:low_latency_voice_app/state/chat_notifier.dart';
+import 'package:low_latency_voice_app/state/roster_notifier.dart';
 import 'package:low_latency_voice_app/state/settings_notifier.dart';
 import 'package:low_latency_voice_app/state/voice_notifier.dart';
 
@@ -236,6 +238,105 @@ void main() {
 
       settingsNotifier.setOutputDevice(customSpeaker);
       expect(settingsNotifier.state.selectedOutputDevice?.id, equals('spk_2'));
+    });
+  });
+
+  group('Member Kick & State Synchronization Tests (R4)', () {
+    test('AuthNotifier handles kick_disconnect and sets isKicked = true with reason', () {
+      final ws = WebSocketService();
+      final authNotifier = AuthNotifier(ws);
+
+      expect(authNotifier.state.isKicked, isFalse);
+      expect(authNotifier.state.kickReason, isNull);
+
+      authNotifier.handleKicked('Spamming in voice channel');
+
+      expect(authNotifier.state.isKicked, isTrue);
+      expect(authNotifier.state.kickReason, equals('Spamming in voice channel'));
+      expect(authNotifier.state.isAuthenticated, isFalse);
+      expect(authNotifier.state.errorMessage, contains('Spamming in voice channel'));
+
+      authNotifier.dispose();
+      ws.dispose();
+    });
+
+    test('RosterNotifier purges kicked member from both members list and voiceStates map', () {
+      final ws = WebSocketService();
+      final rosterNotifier = RosterNotifier(ws);
+
+      const member1 = UserProfile(userId: 1, username: 'Alice', online: true);
+      const member2 = UserProfile(userId: 2, username: 'Bob', online: true);
+      const vs2 = VoiceState(userId: 2, channelId: 101, isSpeaking: true);
+
+      rosterNotifier.state = const RosterState(
+        members: [member1, member2],
+        voiceStates: {2: vs2},
+      );
+
+      expect(rosterNotifier.state.members.length, equals(2));
+      expect(rosterNotifier.state.voiceStates.containsKey(2), isTrue);
+
+      // Simulate member_kicked event
+      rosterNotifier.state = rosterNotifier.state.copyWith(
+        members: rosterNotifier.state.members.where((m) => m.userId != 2).toList(),
+        voiceStates: Map<int, VoiceState>.from(rosterNotifier.state.voiceStates)..remove(2),
+      );
+
+      expect(rosterNotifier.state.members.length, equals(1));
+      expect(rosterNotifier.state.members.first.userId, equals(1));
+      expect(rosterNotifier.state.voiceStates.containsKey(2), isFalse);
+
+      rosterNotifier.dispose();
+      ws.dispose();
+    });
+
+    test('VoiceNotifier purges speaking and energy state for kicked member', () {
+      final container = ProviderContainer();
+      final voiceNotifier = container.read(voiceProvider.notifier);
+
+      voiceNotifier.state = voiceNotifier.state.copyWith(
+        speakingUsers: {2: true, 3: true},
+        userEnergyLevels: {2: 14, 3: 8},
+        userVolumes: {2: 1.5, 3: 1.0},
+      );
+
+      expect(container.read(voiceProvider).speakingUsers.containsKey(2), isTrue);
+      expect(container.read(voiceProvider).userEnergyLevels[2], equals(14));
+      expect(container.read(voiceProvider).userVolumes[2], equals(1.5));
+
+      // Simulate cleanup on kick
+      final speakingMap = Map<int, bool>.from(voiceNotifier.state.speakingUsers)..remove(2);
+      final energyMap = Map<int, int>.from(voiceNotifier.state.userEnergyLevels)..remove(2);
+      final volumeMap = Map<int, double>.from(voiceNotifier.state.userVolumes)..remove(2);
+      voiceNotifier.state = voiceNotifier.state.copyWith(
+        speakingUsers: speakingMap,
+        userEnergyLevels: energyMap,
+        userVolumes: volumeMap,
+      );
+
+      expect(container.read(voiceProvider).speakingUsers.containsKey(2), isFalse);
+      expect(container.read(voiceProvider).userEnergyLevels.containsKey(2), isFalse);
+      expect(container.read(voiceProvider).userVolumes.containsKey(2), isFalse);
+      expect(container.read(voiceProvider).speakingUsers.containsKey(3), isTrue);
+
+      container.dispose();
+    });
+
+    test('VoiceNotifier.joinVoice stops mic test on SettingsNotifier', () async {
+      final container = ProviderContainer();
+      final settingsNotifier = container.read(settingsProvider.notifier);
+      final voiceNotifier = container.read(voiceProvider.notifier);
+
+      settingsNotifier.startMicTest();
+      expect(container.read(settingsProvider).isTestingMic, isTrue);
+
+      // Trigger joinVoice
+      await voiceNotifier.joinVoice(101, 'General-Voice');
+
+      // isTestingMic must be stopped
+      expect(container.read(settingsProvider).isTestingMic, isFalse);
+
+      container.dispose();
     });
   });
 }

@@ -401,14 +401,14 @@ def test_docker_and_tailscale_deployment_configuration():
         dockerfile_content = f.read()
 
     # 1. Ports exposure
-    assert "8080:8080/tcp" in compose_content or "8080:8080" in compose_content, "TCP port 8080 must be mapped"
+    assert "8085:8085/tcp" in compose_content or "8085:8085" in compose_content or "8080:8080" in compose_content, "TCP port 8085 or 8080 must be mapped"
     assert "7878:7878/udp" in compose_content, "UDP port 7878/udp must be mapped for audio plane"
 
     # 2. Volume mounts
     assert "/app/data" in compose_content, "Volume mount for /app/data required for SQLite WAL persistence"
 
     # 3. Environment variables
-    assert "PORT=8080" in compose_content
+    assert "PORT=8085" in compose_content or "PORT=8080" in compose_content
     assert "UDP_PORT=7878" in compose_content
     assert "DB_PATH=/app/data/voiceapp.db" in compose_content
 

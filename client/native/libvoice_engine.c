@@ -253,6 +253,7 @@ VOICE_API int32_t voice_engine_init(const AudioEngineConfig* config) {
 
     memset(&g_stats, 0, sizeof(AudioEngineStats));
     g_stats.input_level_db = -90.0f;
+    g_mic_test_loopback = false;
 
     enter_cs();
     for (int i = 0; i < MAX_PEERS; i++) {
@@ -483,7 +484,8 @@ VOICE_API void voice_engine_set_user_volume(uint32_t user_id, float volume_multi
 
 VOICE_API void voice_engine_clear_peers(void) {
     enter_cs();
-    for (int i = 1; i < MAX_PEERS; i++) {
+    g_mic_test_loopback = false;
+    for (int i = 0; i < MAX_PEERS; i++) {
         g_peers[i].user_id = 0;
         g_peers[i].is_active = false;
         g_peers[i].is_speaking = false;
@@ -507,7 +509,10 @@ VOICE_API void voice_engine_set_mic_test_loopback(bool enabled) {
     } else {
         // Clear loopback peer buffer
         enter_cs();
+        g_peers[0].user_id = 0;
         g_peers[0].is_active = false;
+        g_peers[0].is_speaking = false;
+        g_peers[0].user_volume = 1.0f;
         g_peers[0].read_idx = 0;
         g_peers[0].write_idx = 0;
         leave_cs();
@@ -743,6 +748,7 @@ void mix_audio_streams(int16_t* output_buffer, uint32_t frame_samples) {
 
     for (int i = 0; i < MAX_PEERS; i++) {
         if (!g_peers[i].is_active) continue;
+        if (i == 0 && !g_mic_test_loopback) continue;
 
         float gain = g_peers[i].user_volume;
         for (uint32_t s = 0; s < samples; s++) {

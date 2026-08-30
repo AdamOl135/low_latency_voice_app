@@ -67,7 +67,7 @@ func TestUDPServerLifecycleAndPingPong(t *testing.T) {
 	}
 
 	// Read Pong response
-	buf := make([]byte, 1500)
+	buf := make([]byte, MaxPacketSize)
 	_ = clientConn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, err := clientConn.Read(buf)
 	if err != nil {
@@ -158,7 +158,7 @@ func TestUDPServerLiveVoiceForwarding(t *testing.T) {
 	}
 
 	// Bob receives forwarded voice frame
-	buf := make([]byte, 1500)
+	buf := make([]byte, MaxPacketSize)
 	_ = bobConn.SetReadDeadline(time.Now().Add(1 * time.Second))
 	n, err := bobConn.Read(buf)
 	if err != nil {
@@ -181,5 +181,99 @@ func TestUDPServerLiveVoiceForwarding(t *testing.T) {
 	}
 	if !bytes.Equal(recvPkt.Payload, voicePayload) {
 		t.Errorf("payload mismatch: %v vs %v", recvPkt.Payload, voicePayload)
+	}
+}
+
+func TestUDPServerPCMVoiceForwarding(t *testing.T) {
+	sm := NewSessionManager()
+	router := NewRouter(sm, nil, nil, nil)
+	srv := NewServer("127.0.0.1:0", router)
+
+	if err := srv.Start(); err != nil {
+		t.Fatalf("failed to start UDP server: %v", err)
+	}
+	defer srv.Close()
+
+	serverPort := srv.Port()
+
+	aliceConn, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", serverPort))
+	if err != nil {
+		t.Fatalf("Alice dial failed: %v", err)
+	}
+	defer aliceConn.Close()
+
+	bobConn, err := net.Dial("udp", fmt.Sprintf("127.0.0.1:%d", serverPort))
+	if err != nil {
+		t.Fatalf("Bob dial failed: %v", err)
+	}
+	defer bobConn.Close()
+
+	// Handshake
+	aliceHandshake := &Packet{
+		Magic:     MagicByte,
+		Version:   ProtocolVersion,
+		Type:      TypeHandshake,
+		SenderID:  10,
+		ChannelID: 200,
+		Payload:   []byte("token_alice_pcm"),
+	}
+	_, _ = aliceConn.Write(aliceHandshake.Encode())
+
+	bobHandshake := &Packet{
+		Magic:     MagicByte,
+		Version:   ProtocolVersion,
+		Type:      TypeHandshake,
+		SenderID:  20,
+		ChannelID: 200,
+		Payload:   []byte("token_bob_pcm"),
+	}
+	_, _ = bobConn.Write(bobHandshake.Encode())
+
+	time.Sleep(30 * time.Millisecond)
+
+	// Alice sends uncompressed 1920-byte PCM frame
+	pcmPayload := make([]byte, 1920)
+	for i := range pcmPayload {
+		pcmPayload[i] = byte((i * 13) % 256)
+	}
+	voicePkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		VAD:         true,
+		EnergyLevel: 15,
+		SenderID:    10,
+		ChannelID:   200,
+		Sequence:    55,
+		Timestamp:   96000,
+		PayloadLen:  uint16(len(pcmPayload)),
+		Payload:     pcmPayload,
+	}
+
+	_, err = aliceConn.Write(voicePkt.Encode())
+	if err != nil {
+		t.Fatalf("Alice PCM send failed: %v", err)
+	}
+
+	// Bob receives 1940-byte datagram
+	buf := make([]byte, MaxPacketSize)
+	_ = bobConn.SetReadDeadline(time.Now().Add(1 * time.Second))
+	n, err := bobConn.Read(buf)
+	if err != nil {
+		t.Fatalf("Bob failed to receive PCM frame: %v", err)
+	}
+	if n != 1940 {
+		t.Fatalf("expected Bob to receive 1940 bytes, got %d", n)
+	}
+
+	recvPkt, err := Decode(buf[:n])
+	if err != nil {
+		t.Fatalf("failed to decode PCM frame: %v", err)
+	}
+	if recvPkt.SenderID != 10 || recvPkt.ChannelID != 200 {
+		t.Errorf("header routing fields mismatch: sender=%d ch=%d", recvPkt.SenderID, recvPkt.ChannelID)
+	}
+	if !bytes.Equal(recvPkt.Payload, pcmPayload) {
+		t.Errorf("PCM payload mismatch")
 	}
 }

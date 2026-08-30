@@ -42,6 +42,7 @@ class MockServerUser:
         self.is_speaking = False
         self.energy_level = 0
         self.ws: Optional[websockets.ServerConnection] = None
+        self.ws_connections: Set[websockets.ServerConnection] = set()
         self.udp_addr: Optional[Tuple[str, int]] = None
 
 
@@ -137,12 +138,15 @@ class MockServer:
                     if uid in self.users_by_id:
                         current_user = self.users_by_id[uid]
                         current_user.ws = ws
+                        current_user.ws_connections.add(ws)
                         self.ws_to_user[ws] = current_user
 
         except (websockets.ConnectionClosed, asyncio.CancelledError):
             pass
         finally:
             if current_user:
+                if ws in current_user.ws_connections:
+                    current_user.ws_connections.remove(ws)
                 if current_user.current_channel_id:
                     await self._broadcast_to_channel(
                         current_user.current_channel_id,
@@ -150,7 +154,8 @@ class MockServer:
                     )
                 if ws in self.ws_to_user:
                     del self.ws_to_user[ws]
-                current_user.ws = None
+                if current_user.ws == ws:
+                    current_user.ws = next(iter(current_user.ws_connections)) if current_user.ws_connections else None
 
     async def _process_action(
         self,
@@ -380,6 +385,7 @@ class MockServer:
                 return {"status": "error", "error": "Target user not found"}
             
             target = self.users_by_id[target_id]
+            was_in_channel = target.current_channel_id is not None
             # Revoke tokens and disconnect
             target.current_channel_id = None
             if target.token in self.users_by_token:
@@ -394,9 +400,28 @@ class MockServer:
                 "reason": reason,
             })
 
-            # Force close target WebSocket with code 4001
-            if target.ws:
-                await target.ws.close(code=4001, reason="Kicked from server")
+            # Also broadcast voice evacuation if target was in a voice channel
+            if was_in_channel:
+                await self._broadcast_global({
+                    "event": "voice_state_update",
+                    "user_id": target.user_id,
+                    "channel_id": None,
+                    "is_speaking": False,
+                    "speaking": False,
+                    "energy": 0,
+                })
+
+            # Force close all target WebSockets with code 4001 and reason
+            for ws_conn in list(target.ws_connections):
+                try:
+                    await ws_conn.close(code=4001, reason=reason)
+                except Exception:
+                    pass
+            if target.ws and target.ws not in target.ws_connections:
+                try:
+                    await target.ws.close(code=4001, reason=reason)
+                except Exception:
+                    pass
 
             return {"status": "ok"}
 
@@ -433,6 +458,9 @@ class MockServer:
             return
 
         if pkt.magic != MAGIC_BYTE or pkt.version != PROTOCOL_VERSION:
+            return
+
+        if len(pkt.payload) > 4076:
             return
 
         # Handle Handshake

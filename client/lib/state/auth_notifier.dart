@@ -8,12 +8,16 @@ class AuthState {
   final bool isLoading;
   final User? user;
   final String? errorMessage;
+  final bool isKicked;
+  final String? kickReason;
 
   const AuthState({
     this.isAuthenticated = false,
     this.isLoading = false,
     this.user,
     this.errorMessage,
+    this.isKicked = false,
+    this.kickReason,
   });
 
   AuthState copyWith({
@@ -21,12 +25,16 @@ class AuthState {
     bool? isLoading,
     User? user,
     String? errorMessage,
+    bool? isKicked,
+    String? kickReason,
   }) {
     return AuthState(
       isAuthenticated: isAuthenticated ?? this.isAuthenticated,
       isLoading: isLoading ?? this.isLoading,
       user: user ?? this.user,
       errorMessage: errorMessage,
+      isKicked: isKicked ?? this.isKicked,
+      kickReason: kickReason ?? this.kickReason,
     );
   }
 }
@@ -49,11 +57,26 @@ class AuthNotifier extends StateNotifier<AuthState> {
       final eventType = event['event']?.toString();
       if (eventType == 'member_kicked') {
         final kickedUserId = event['data']?['user_id'] ?? event['user_id'];
+        final reason = event['data']?['reason'] ?? event['reason'] ?? 'Kicked by administrator';
         if (state.user != null && state.user!.id == kickedUserId) {
-          logout();
+          handleKicked(reason.toString());
         }
+      } else if (eventType == 'kick_disconnect') {
+        final reason = event['reason']?.toString() ?? 'Kicked by administrator';
+        handleKicked(reason);
       }
     });
+  }
+
+  void handleKicked([String reason = 'Kicked by administrator']) {
+    _ws.disconnect();
+    state = state.copyWith(
+      isAuthenticated: false,
+      isLoading: false,
+      isKicked: true,
+      kickReason: reason,
+      errorMessage: 'Kicked by administrator: $reason',
+    );
   }
 
   Future<void> checkSavedSession() async {

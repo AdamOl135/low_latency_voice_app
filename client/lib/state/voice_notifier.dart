@@ -203,6 +203,22 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
           _ref.read(channelsProvider.notifier).setConnectedVoiceChannel(toChannelId);
           state = state.copyWith(connectedChannelId: toChannelId);
         }
+      } else if (eventType == 'member_kicked') {
+        final kickedId = (data['user_id'] is int) ? data['user_id'] as int : null;
+        if (kickedId != null) {
+          if (kickedId == currentUserId) {
+            disconnect();
+          } else {
+            final speakingMap = Map<int, bool>.from(state.speakingUsers)..remove(kickedId);
+            final energyMap = Map<int, int>.from(state.userEnergyLevels)..remove(kickedId);
+            final volumeMap = Map<int, double>.from(state.userVolumes)..remove(kickedId);
+            state = state.copyWith(
+              speakingUsers: speakingMap,
+              userEnergyLevels: energyMap,
+              userVolumes: volumeMap,
+            );
+          }
+        }
       }
     });
   }
@@ -215,6 +231,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
         : _ref.read(settingsProvider).serverHost;
 
     // Ensure mic test is stopped and peer streams are clean
+    _ref.read(settingsProvider.notifier).stopMicTest();
     _audioEngine.stopMicTest();
     _audioEngine.clearPeers();
 

@@ -202,12 +202,15 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
     _micTestSub?.cancel();
     _micTestSub = null;
     _audioEngine.stopMicTest();
+    _vadService.reset();
 
-    state = state.copyWith(
-      isTestingMic: false,
-      micTestInputLevelDb: -90.0,
-      isMicSpeaking: false,
-    );
+    if (mounted && state.isTestingMic) {
+      state = state.copyWith(
+        isTestingMic: false,
+        micTestInputLevelDb: -90.0,
+        isMicSpeaking: false,
+      );
+    }
   }
 
   void toggleMicTest() {

@@ -7,6 +7,8 @@ import 'package:low_latency_voice_app/models/channel.dart';
 import 'package:low_latency_voice_app/models/user.dart';
 import 'package:low_latency_voice_app/state/auth_notifier.dart';
 import 'package:low_latency_voice_app/state/channels_notifier.dart';
+import 'package:low_latency_voice_app/state/roster_notifier.dart';
+import 'package:low_latency_voice_app/state/settings_notifier.dart';
 import 'package:low_latency_voice_app/state/voice_notifier.dart';
 import 'package:low_latency_voice_app/ui/channels_pane.dart';
 import 'package:low_latency_voice_app/ui/chat_pane.dart';
@@ -119,7 +121,7 @@ void main() {
 
     // Tap again to stop
     await tester.tap(testMicButton);
-    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pumpAndSettle();
     expect(find.text('Test Mic'), findsOneWidget);
   });
 
@@ -184,5 +186,145 @@ void main() {
     expect(find.text('Server Mute'), findsOneWidget);
     expect(find.text('Server Deafen'), findsOneWidget);
     expect(find.text('Kick User Immediately'), findsOneWidget);
+  });
+
+  testWidgets('AudioSettingsDialog stops mic test on pop/dispose (R2)', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 900));
+    final container = ProviderContainer();
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () {
+                    showDialog(
+                      context: context,
+                      builder: (_) => const AudioSettingsDialog(),
+                    );
+                  },
+                  child: const Text('Open Settings'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Open settings dialog
+    await tester.tap(find.text('Open Settings'));
+    await tester.pumpAndSettle();
+
+    // Start mic test
+    final testMicButton = find.byKey(const Key('mic_test_toggle_button'));
+    await tester.tap(testMicButton);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(container.read(settingsProvider).isTestingMic, isTrue);
+
+    // Close the dialog via close button (which calls pop and triggers dispose)
+    final closeButton = find.byIcon(Icons.close);
+    await tester.tap(closeButton);
+    await tester.pumpAndSettle();
+
+    // Verify mic test is stopped upon dialog disposal
+    expect(container.read(settingsProvider).isTestingMic, isFalse);
+    container.dispose();
+  });
+
+  testWidgets('ChannelsPane and RosterPane render green speaking halo ring when peer is speaking (R3)', (WidgetTester tester) async {
+    const mockUser = User(
+      id: 1,
+      username: 'Alice',
+      isAdmin: true,
+      roles: ['admin'],
+      permissions: 0xFFFFFFFF,
+    );
+
+    const peerProfile = UserProfile(
+      userId: 2,
+      username: 'Bob',
+      roles: ['member'],
+      online: true,
+      voiceChannelId: 2,
+    );
+
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authProvider.overrideWith((ref) {
+            final ws = ref.watch(webSocketServiceProvider);
+            final notifier = AuthNotifier(ws);
+            notifier.state = const AuthState(isAuthenticated: true, user: mockUser);
+            return notifier;
+          }),
+          channelsProvider.overrideWith((ref) {
+            final ws = ref.watch(webSocketServiceProvider);
+            final notifier = ChannelsNotifier(ws);
+            notifier.state = const ChannelsState(
+              channels: [
+                Channel(id: 1, name: 'general', type: 'text'),
+                Channel(id: 2, name: 'Voice-Lounge', type: 'voice'),
+              ],
+              selectedVoiceChannelId: 2,
+              voiceOccupants: {2: [2]},
+            );
+            return notifier;
+          }),
+          rosterProvider.overrideWith((ref) {
+            final ws = ref.watch(webSocketServiceProvider);
+            final notifier = RosterNotifier(ws);
+            notifier.state = const RosterState(
+              members: [
+                UserProfile(userId: 1, username: 'Alice', online: true),
+                peerProfile,
+              ],
+            );
+            return notifier;
+          }),
+          voiceProvider.overrideWith((ref) {
+            final ws = ref.watch(webSocketServiceProvider);
+            final client = ref.watch(voiceClientProvider);
+            final engine = ref.watch(audioEngineProvider);
+            final notifier = VoiceNotifier(ws, client, engine, ref);
+            notifier.state = const VoiceStateModel(
+              status: VoiceConnectionStatus.connected,
+              connectedChannelId: 2,
+              connectedChannelName: 'Voice-Lounge',
+              speakingUsers: {2: true}, // Bob is actively speaking
+              userEnergyLevels: {2: 14},
+            );
+            return notifier;
+          }),
+        ],
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: const MainLayout(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Verify Bob is rendered in ChannelsPane and RosterPane
+    expect(find.text('Bob'), findsWidgets);
+
+    // Verify speaking halo styling: Look for Container with speakingGreen border
+    final greenBorders = tester.widgetList<Container>(find.byType(Container)).where((container) {
+      final decoration = container.decoration;
+      if (decoration is BoxDecoration && decoration.border is Border) {
+        final border = decoration.border as Border;
+        return border.top.color == AppTheme.speakingGreen;
+      }
+      return false;
+    });
+
+    expect(greenBorders.length, greaterThanOrEqualTo(2)); // Present in both ChannelsPane and RosterPane
   });
 }

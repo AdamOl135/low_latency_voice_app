@@ -36,12 +36,12 @@ COPY --from=builder /app/server /app/server
 RUN mkdir -p /app/data && chmod 755 /app/data
 
 # Default environment configuration
-ENV PORT=8080 \
+ENV PORT=8085 \
     UDP_PORT=7878 \
     DB_PATH=/app/data/voiceapp.db
 
-# Expose HTTP/WebSocket control plane (8080/tcp) and UDP voice audio plane (7878/udp)
-EXPOSE 8080/tcp
+# Expose HTTP/WebSocket control plane (8085/tcp) and UDP voice audio plane (7878/udp)
+EXPOSE 8085/tcp
 EXPOSE 7878/udp
 
 # Mount point for persistent database and media
@@ -49,7 +49,7 @@ VOLUME ["/app/data"]
 
 # Health check against HTTP health endpoint
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-    CMD wget -qO- http://127.0.0.1:8080/health || exit 1
+    CMD wget -qO- http://127.0.0.1:8085/health || exit 1
 
 # Start backend server
 ENTRYPOINT ["/app/server"]

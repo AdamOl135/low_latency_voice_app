@@ -808,6 +808,7 @@ func (h *Hub) handleKickMember(c *Client, reqID interface{}, params map[string]i
 	}
 
 	_ = h.storage.DeleteUserSessions(targetUserID)
+	_ = h.storage.RevokeVoiceTokens(targetUserID)
 
 	h.mu.Lock()
 	var clientsToClose []*Client
@@ -816,8 +817,10 @@ func (h *Hub) handleKickMember(c *Client, reqID interface{}, params map[string]i
 			clientsToClose = append(clientsToClose, client)
 		}
 	}
+	var hadVoiceChannel uint32
 	if vs, ok := h.voiceStates[targetUserID]; ok {
 		chID := vs.ChannelID
+		hadVoiceChannel = chID
 		if oldMap, ok := h.voiceChannels[chID]; ok {
 			for _, client := range clientsToClose {
 				delete(oldMap, client)
@@ -846,6 +849,18 @@ func (h *Hub) handleKickMember(c *Client, reqID interface{}, params map[string]i
 		"user_id": targetUserID,
 		"reason":  reason,
 	})
+
+	if hadVoiceChannel > 0 {
+		h.BroadcastEvent("voice_state_update", map[string]interface{}{
+			"user_id":         targetUserID,
+			"channel_id":      nil,
+			"is_speaking":     false,
+			"self_muted":      false,
+			"self_deafened":   false,
+			"server_muted":    false,
+			"server_deafened": false,
+		})
+	}
 }
 
 // --- Parameter Extraction Helpers ---

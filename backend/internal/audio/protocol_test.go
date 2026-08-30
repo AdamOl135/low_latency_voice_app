@@ -174,6 +174,109 @@ func TestFlagsBitManipulation(t *testing.T) {
 	}
 }
 
+func TestPCMAndOpusPacketEncoding(t *testing.T) {
+	// Test 1: Opus frame (80 bytes)
+	opusPayload := make([]byte, 80)
+	for i := range opusPayload {
+		opusPayload[i] = byte(i % 256)
+	}
+	opusPkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		VAD:         true,
+		EnergyLevel: 10,
+		SenderID:    101,
+		ChannelID:   1,
+		Sequence:    1,
+		Timestamp:   48000,
+		PayloadLen:  uint16(len(opusPayload)),
+		Payload:     opusPayload,
+	}
+	encodedOpus := opusPkt.Encode()
+	if len(encodedOpus) != HeaderSize+80 {
+		t.Fatalf("expected Opus encoded len %d, got %d", HeaderSize+80, len(encodedOpus))
+	}
+	decodedOpus, err := Decode(encodedOpus)
+	if err != nil {
+		t.Fatalf("failed to decode Opus packet: %v", err)
+	}
+	if !bytes.Equal(decodedOpus.Payload, opusPayload) {
+		t.Errorf("Opus payload mismatch")
+	}
+
+	// Test 2: Uncompressed PCM frame (1920 bytes for 20ms @ 48kHz mono 16-bit)
+	pcmPayload := make([]byte, 1920)
+	for i := range pcmPayload {
+		pcmPayload[i] = byte((i * 7) % 256)
+	}
+	pcmPkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		VAD:         true,
+		EnergyLevel: 14,
+		SenderID:    102,
+		ChannelID:   1,
+		Sequence:    2,
+		Timestamp:   48960,
+		PayloadLen:  uint16(len(pcmPayload)),
+		Payload:     pcmPayload,
+	}
+	encodedPCM := pcmPkt.Encode()
+	if len(encodedPCM) != HeaderSize+1920 {
+		t.Fatalf("expected PCM encoded len %d, got %d", HeaderSize+1920, len(encodedPCM))
+	}
+	decodedPCM, err := Decode(encodedPCM)
+	if err != nil {
+		t.Fatalf("failed to decode PCM packet: %v", err)
+	}
+	if !bytes.Equal(decodedPCM.Payload, pcmPayload) {
+		t.Errorf("PCM payload mismatch")
+	}
+	if decodedPCM.VAD != true || decodedPCM.EnergyLevel != 14 {
+		t.Errorf("VAD/energy mismatch on PCM packet: got vad=%v energy=%d", decodedPCM.VAD, decodedPCM.EnergyLevel)
+	}
+}
+
+func TestPayloadSizeBoundaries(t *testing.T) {
+	// Max supported payload (4076 bytes)
+	maxPayload := make([]byte, MaxPayloadSize)
+	pkt := &Packet{
+		Magic:       MagicByte,
+		Version:     ProtocolVersion,
+		Type:        TypeVoice,
+		SenderID:    1,
+		ChannelID:   1,
+		Sequence:    1,
+		Timestamp:   100,
+		PayloadLen:  uint16(len(maxPayload)),
+		Payload:     maxPayload,
+	}
+	encoded := pkt.Encode()
+	if len(encoded) != MaxPacketSize {
+		t.Fatalf("expected max packet size %d, got %d", MaxPacketSize, len(encoded))
+	}
+	decoded, err := Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode max payload failed: %v", err)
+	}
+	if len(decoded.Payload) != MaxPayloadSize {
+		t.Errorf("expected decoded payload length %d, got %d", MaxPayloadSize, len(decoded.Payload))
+	}
+
+	// Payload exceeding MaxPayloadSize (4077 bytes in header)
+	raw := make([]byte, HeaderSize+4077)
+	raw[0] = MagicByte
+	raw[1] = ProtocolVersion
+	raw[2] = TypeVoice
+	binary.BigEndian.PutUint16(raw[14:16], MaxPayloadSize+1) // 4077
+	_, err = Decode(raw)
+	if err != ErrPayloadTooLarge {
+		t.Errorf("expected ErrPayloadTooLarge for payload %d, got %v", MaxPayloadSize+1, err)
+	}
+}
+
 func BenchmarkPacketDecode(b *testing.B) {
 	pkt := &Packet{
 		Magic:       MagicByte,
@@ -211,7 +314,7 @@ func BenchmarkPacketEncode(b *testing.B) {
 		Timestamp:   96000,
 		Payload:     make([]byte, 80),
 	}
-	dst := make([]byte, 1500)
+	dst := make([]byte, MaxPacketSize)
 	b.ReportAllocs()
 	b.ResetTimer()
 

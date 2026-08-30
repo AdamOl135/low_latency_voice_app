@@ -302,10 +302,16 @@ func (sm *SessionManager) MoveMember(userID uint32, toChannelID uint32) {
 	sm.byChannel[toChannelID][userID] = sess
 }
 
-// RemoveSession removes a user's session upon leaving voice or disconnect.
+// RemoveSession removes a user's session upon leaving voice or disconnect and purges pending tokens.
 func (sm *SessionManager) RemoveSession(userID uint32) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
+
+	for tok, pt := range sm.pendingTokens {
+		if pt.UserID == userID {
+			delete(sm.pendingTokens, tok)
+		}
+	}
 
 	sess, ok := sm.byUser[userID]
 	if !ok {
@@ -320,6 +326,18 @@ func (sm *SessionManager) RemoveSession(userID uint32) {
 		delete(chMap, userID)
 		if len(chMap) == 0 {
 			delete(sm.byChannel, sess.ChannelID)
+		}
+	}
+}
+
+// RevokePending removes all pending unconsumed tokens for a specific user ID.
+func (sm *SessionManager) RevokePending(userID uint32) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	for tok, pt := range sm.pendingTokens {
+		if pt.UserID == userID {
+			delete(sm.pendingTokens, tok)
 		}
 	}
 }

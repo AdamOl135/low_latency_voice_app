@@ -672,6 +672,14 @@ func (r *SQLiteRepository) ConsumeVoiceToken(token string) (*model.VoiceToken, e
 	return vt, nil
 }
 
+func (r *SQLiteRepository) RevokeVoiceTokens(userID uint32) error {
+	_, err := r.db.Exec(`DELETE FROM voice_tokens WHERE user_id = ?`, userID)
+	if err != nil {
+		return fmt.Errorf("failed to revoke voice tokens for user %d: %w", userID, err)
+	}
+	return nil
+}
+
 func parseTime(value string) (time.Time, error) {
 	formats := []string{
 		time.RFC3339Nano,

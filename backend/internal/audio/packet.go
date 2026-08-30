@@ -76,6 +76,10 @@ func DecodeInto(data []byte, pkt *Packet) error {
 	pkt.PayloadLen = binary.BigEndian.Uint16(data[14:16])
 	pkt.Timestamp = binary.BigEndian.Uint32(data[16:20])
 
+	if pkt.PayloadLen > MaxPayloadSize {
+		return ErrPayloadTooLarge
+	}
+
 	expectedTotal := HeaderSize + int(pkt.PayloadLen)
 	if len(data) < expectedTotal {
 		return fmt.Errorf("%w: header says %d bytes, buffer has %d bytes",
