@@ -127,14 +127,30 @@ static void stop_hardware_playback(void);
 // miniaudio capture callback
 static void ma_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     (void)pOutput;
-    (void)pDevice;
     if (!pInput || frameCount == 0 || !g_capturing) return;
 
     const int16_t* samples = (const int16_t*)pInput;
+    ma_uint32 channels = (pDevice && pDevice->capture.channels > 0) ? pDevice->capture.channels : 1;
+
     enter_cs();
-    for (ma_uint32 i = 0; i < frameCount; i++) {
-        g_capture_ring[g_capture_write_idx] = samples[i];
-        g_capture_write_idx = (g_capture_write_idx + 1) % RING_BUFFER_SIZE;
+    if (channels <= 1) {
+        for (ma_uint32 i = 0; i < frameCount; i++) {
+            g_capture_ring[g_capture_write_idx] = samples[i];
+            g_capture_write_idx = (g_capture_write_idx + 1) % RING_BUFFER_SIZE;
+        }
+    } else {
+        // Multi-channel interface (e.g. Universal Audio Apollo Solo, stereo microphones)
+        for (ma_uint32 i = 0; i < frameCount; i++) {
+            int32_t mixed = 0;
+            for (ma_uint32 c = 0; c < channels; c++) {
+                mixed += (int32_t)samples[i * channels + c];
+            }
+            int32_t val = mixed / (int32_t)channels;
+            if (val > 32767) val = 32767;
+            if (val < -32768) val = -32768;
+            g_capture_ring[g_capture_write_idx] = (int16_t)val;
+            g_capture_write_idx = (g_capture_write_idx + 1) % RING_BUFFER_SIZE;
+        }
     }
     leave_cs();
 }
@@ -142,17 +158,40 @@ static void ma_capture_callback(ma_device* pDevice, void* pOutput, const void* p
 // miniaudio playback callback
 static void ma_playback_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
     (void)pInput;
-    (void)pDevice;
     if (!pOutput || frameCount == 0) return;
     int16_t* outBuf = (int16_t*)pOutput;
+    ma_uint32 channels = (pDevice && pDevice->playback.channels > 0) ? pDevice->playback.channels : 1;
 
     if (!g_playing || g_local_deafened) {
-        memset(outBuf, 0, frameCount * sizeof(int16_t));
+        memset(outBuf, 0, frameCount * channels * sizeof(int16_t));
         return;
     }
 
     enter_cs();
-    mix_audio_streams(outBuf, frameCount);
+    if (channels <= 1) {
+        mix_audio_streams(outBuf, frameCount);
+    } else {
+        // Output device is stereo or multi-channel (e.g. Topping DX3Pro+ USB DAC, stereo headphones)
+        // Mix mono stream first into temporary buffer, then duplicate across all output channels
+        int16_t monoBuf[SAMPLES_PER_FRAME];
+        uint32_t framesRemaining = frameCount;
+        uint32_t frameOffset = 0;
+
+        while (framesRemaining > 0) {
+            uint32_t chunk = (framesRemaining > SAMPLES_PER_FRAME) ? SAMPLES_PER_FRAME : framesRemaining;
+            mix_audio_streams(monoBuf, chunk);
+
+            for (uint32_t f = 0; f < chunk; f++) {
+                int16_t sample = monoBuf[f];
+                for (ma_uint32 c = 0; c < channels; c++) {
+                    outBuf[(frameOffset + f) * channels + c] = sample;
+                }
+            }
+
+            frameOffset += chunk;
+            framesRemaining -= chunk;
+        }
+    }
     leave_cs();
 }
 
@@ -791,16 +830,16 @@ void mix_audio_streams(int16_t* output_buffer, uint32_t frame_samples) {
             }
         }
 
-        // Cubic polynomial soft limiter to prevent digital clipping
+        // Smooth continuous cubic soft limiter without threshold discontinuities
         for (uint32_t s = 0; s < chunk; s++) {
             float x = mix_accumulator[s] / 32768.0f;
             float y;
-            if (x > 1.0f) {
+            if (x >= 1.5f) {
                 y = 1.0f;
-            } else if (x < -1.0f) {
+            } else if (x <= -1.5f) {
                 y = -1.0f;
             } else {
-                y = x - (x * x * x) / 3.0f;
+                y = x - (4.0f / 27.0f) * (x * x * x);
             }
             output_buffer[out_offset + s] = (int16_t)(y * 32767.0f);
         }
