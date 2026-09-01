@@ -136,7 +136,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
       if (packet.senderId == currentUserId || packet.senderId == 0) return;
 
       if (!state.isDeafened) {
-        _audioEngine.feedInboundPacket(packet.rawBytes ?? packet.encode());
+        _audioEngine.feedInboundPacket(packet.rawBytes ?? Uint8List(0));
       }
     });
 

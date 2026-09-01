@@ -258,9 +258,13 @@ class AudioEngineService {
           '$exeDir\\data\\voice_engine.dll',
           '${Directory.current.path}\\voice_engine.dll',
           '${Directory.current.path}\\native\\build\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\native\\build\\Debug\\voice_engine.dll',
           '${Directory.current.path}\\client\\native\\build\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\client\\native\\build\\Debug\\voice_engine.dll',
           '${Directory.current.path}\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\build\\windows\\x64\\runner\\Debug\\voice_engine.dll',
           '${Directory.current.path}\\client\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\client\\build\\windows\\x64\\runner\\Debug\\voice_engine.dll',
         ]);
       } else if (Platform.isLinux) {
         candidatePaths.addAll([
@@ -270,8 +274,12 @@ class AudioEngineService {
           '${Directory.current.path}/libvoice_engine.so',
           '${Directory.current.path}/native/build/libvoice_engine.so',
           '${Directory.current.path}/client/native/build/libvoice_engine.so',
+          '${Directory.current.path}/build/linux/x64/debug/bundle/lib/libvoice_engine.so',
           '${Directory.current.path}/build/linux/x64/release/bundle/lib/libvoice_engine.so',
+          '${Directory.current.path}/build/linux/x64/profile/bundle/lib/libvoice_engine.so',
+          '${Directory.current.path}/client/build/linux/x64/debug/bundle/lib/libvoice_engine.so',
           '${Directory.current.path}/client/build/linux/x64/release/bundle/lib/libvoice_engine.so',
+          '${Directory.current.path}/client/build/linux/x64/profile/bundle/lib/libvoice_engine.so',
         ]);
       } else if (Platform.isMacOS) {
         candidatePaths.addAll([
@@ -337,17 +345,11 @@ class AudioEngineService {
       calloc.free(outSpeaking);
       calloc.free(outEnergy);
     } else {
-      // High-fidelity synthetic frame generation for pure Dart / headless fallback
+      // Safe silence frame generation for headless / pure Dart fallback (no synthetic tones)
       frameBytes = Uint8List(byteCount);
-      if (!_isLocalMuted) {
-        final pcm = frameBytes.buffer.asInt16List();
-        for (var i = 0; i < pcm.length; i++) {
-          pcm[i] = (math.sin(i * 0.1) * 6000).toInt();
-        }
-        dbfs = -18.5;
-        isSpeaking = true;
-        energyLevel = 10;
-      }
+      dbfs = -90.0;
+      isSpeaking = false;
+      energyLevel = 0;
     }
 
     _lastInputLevelDb = dbfs;
