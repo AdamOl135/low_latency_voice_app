@@ -11,6 +11,7 @@ set(SOURCE_FILES
 
 set(HEADER_FILES
     libvoice_engine.h
+    miniaudio.h
 )
 
 # Shared library target
@@ -25,13 +26,27 @@ target_include_directories(voice_engine PUBLIC
 
 if (WIN32)
     target_compile_definitions(voice_engine PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(voice_engine PRIVATE winmm)
     set_target_properties(voice_engine PROPERTIES
         OUTPUT_NAME "voice_engine"
         PREFIX ""
     )
+elseif (APPLE)
+    target_link_libraries(voice_engine PRIVATE
+        "-framework CoreAudio"
+        "-framework AudioUnit"
+        "-framework CoreFoundation"
+        m pthread dl
+    )
+    set_target_properties(voice_engine PROPERTIES
+        OUTPUT_NAME "voice_engine"
+    )
 else()
-    target_link_libraries(voice_engine PRIVATE m)
+    find_package(Threads REQUIRED)
+    target_link_libraries(voice_engine PRIVATE
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+        m
+    )
     set_target_properties(voice_engine PROPERTIES
         OUTPUT_NAME "voice_engine"
     )

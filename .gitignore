@@ -44,7 +44,10 @@ build/
 client/native/build/
 CMakeFiles/
 CMakeCache.txt
-*.cmake
+cmake_install.cmake
+CMakePackageConfig.cmake
+install_manifest.txt
+**/ephemeral/
 Makefile
 
 # IDEs and Editors
@@ -61,6 +64,8 @@ dist/
 *.log
 tmp/
 scratch/
+.git_workdir/
+*.bundle
 
 # OS generated
 .DS_Store

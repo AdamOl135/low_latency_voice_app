@@ -4,16 +4,12 @@
 #include <string.h>
 #include <math.h>
 
-#ifdef _WIN32
-  #include <windows.h>
-  #include <mmsystem.h>
-  #pragma comment(lib, "winmm.lib")
-#endif
+#define MINIAUDIO_IMPLEMENTATION
+#include "miniaudio.h"
 
 #define MAX_PEERS 32
 #define RING_BUFFER_SIZE 32768
 #define MAX_DEVICES 16
-#define NUM_WAVE_BUFFERS 4
 #define SAMPLES_PER_FRAME 960 // 20ms at 48kHz mono
 #define BUFFER_SIZE_BYTES (SAMPLES_PER_FRAME * sizeof(int16_t)) // 1920 bytes
 
@@ -52,19 +48,34 @@ static int16_t g_capture_ring[RING_BUFFER_SIZE];
 static uint32_t g_capture_read_idx = 0;
 static uint32_t g_capture_write_idx = 0;
 
-// Internal synthesis phase for fallback / test tone
-static double g_synth_phase = 0.0;
 static uint32_t g_hangover_ms_left = 0;
 
+// miniaudio global context & devices
+static ma_context g_ma_context;
+static bool g_ma_context_initialized = false;
+static ma_device g_capture_device;
+static bool g_capture_device_initialized = false;
+static ma_device g_playback_device;
+static bool g_playback_device_initialized = false;
+
 #ifdef _WIN32
-static HWAVEIN g_hWaveIn = NULL;
-static HWAVEOUT g_hWaveOut = NULL;
-static WAVEHDR g_inWaveHdr[NUM_WAVE_BUFFERS];
-static WAVEHDR g_outWaveHdr[NUM_WAVE_BUFFERS];
-static int16_t g_inBuffers[NUM_WAVE_BUFFERS][SAMPLES_PER_FRAME];
-static int16_t g_outBuffers[NUM_WAVE_BUFFERS][SAMPLES_PER_FRAME];
+#include <windows.h>
 static CRITICAL_SECTION g_audio_cs;
 static bool g_cs_initialized = false;
+
+static void init_cs(void) {
+    if (!g_cs_initialized) {
+        InitializeCriticalSection(&g_audio_cs);
+        g_cs_initialized = true;
+    }
+}
+
+static void destroy_cs(void) {
+    if (g_cs_initialized) {
+        DeleteCriticalSection(&g_audio_cs);
+        g_cs_initialized = false;
+    }
+}
 
 static void enter_cs(void) {
     if (g_cs_initialized) EnterCriticalSection(&g_audio_cs);
@@ -74,175 +85,209 @@ static void leave_cs(void) {
     if (g_cs_initialized) LeaveCriticalSection(&g_audio_cs);
 }
 
-// Forward declaration
+#else
+#include <pthread.h>
+static pthread_mutex_t g_audio_mutex;
+static bool g_mutex_initialized = false;
+
+static void init_cs(void) {
+    if (!g_mutex_initialized) {
+        pthread_mutexattr_t attr;
+        pthread_mutexattr_init(&attr);
+        pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+        pthread_mutex_init(&g_audio_mutex, &attr);
+        pthread_mutexattr_destroy(&attr);
+        g_mutex_initialized = true;
+    }
+}
+
+static void destroy_cs(void) {
+    if (g_mutex_initialized) {
+        pthread_mutex_destroy(&g_audio_mutex);
+        g_mutex_initialized = false;
+    }
+}
+
+static void enter_cs(void) {
+    if (g_mutex_initialized) pthread_mutex_lock(&g_audio_mutex);
+}
+
+static void leave_cs(void) {
+    if (g_mutex_initialized) pthread_mutex_unlock(&g_audio_mutex);
+}
+#endif
+
+// Forward declarations
 void mix_audio_streams(int16_t* output_buffer, uint32_t frame_samples);
+static void start_hardware_capture(void);
+static void stop_hardware_capture(void);
+static void start_hardware_playback(void);
+static void stop_hardware_playback(void);
 
-// WaveIn Callback
-static void CALLBACK waveInProc(HWAVEIN hwi, UINT uMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
-    if (uMsg == WIM_DATA && g_capturing) {
-        WAVEHDR* pHdr = (WAVEHDR*)dwParam1;
-        if (pHdr && pHdr->dwBytesRecorded > 0) {
-            int16_t* samples = (int16_t*)pHdr->lpData;
-            uint32_t numSamples = pHdr->dwBytesRecorded / sizeof(int16_t);
+// miniaudio capture callback
+static void ma_capture_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+    (void)pOutput;
+    (void)pDevice;
+    if (!pInput || frameCount == 0 || !g_capturing) return;
 
-            enter_cs();
-            for (uint32_t i = 0; i < numSamples; i++) {
-                g_capture_ring[g_capture_write_idx] = samples[i];
-                g_capture_write_idx = (g_capture_write_idx + 1) % RING_BUFFER_SIZE;
-            }
-            leave_cs();
-        }
-
-        // Re-queue buffer if capture still active
-        if (g_capturing && g_hWaveIn) {
-            waveInAddBuffer(hwi, pHdr, sizeof(WAVEHDR));
-        }
+    const int16_t* samples = (const int16_t*)pInput;
+    enter_cs();
+    for (ma_uint32 i = 0; i < frameCount; i++) {
+        g_capture_ring[g_capture_write_idx] = samples[i];
+        g_capture_write_idx = (g_capture_write_idx + 1) % RING_BUFFER_SIZE;
     }
+    leave_cs();
 }
 
-// WaveOut Callback
-static void CALLBACK waveOutProc(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance, DWORD_PTR dwParam1, DWORD_PTR dwParam2) {
-    if (uMsg == WOM_DONE && g_playing) {
-        WAVEHDR* pHdr = (WAVEHDR*)dwParam1;
-        if (pHdr && g_playing && g_hWaveOut) {
-            int16_t* outBuf = (int16_t*)pHdr->lpData;
-            enter_cs();
-            mix_audio_streams(outBuf, SAMPLES_PER_FRAME);
-            leave_cs();
-            waveOutWrite(hwo, pHdr, sizeof(WAVEHDR));
-        }
+// miniaudio playback callback
+static void ma_playback_callback(ma_device* pDevice, void* pOutput, const void* pInput, ma_uint32 frameCount) {
+    (void)pInput;
+    (void)pDevice;
+    if (!pOutput || frameCount == 0) return;
+    int16_t* outBuf = (int16_t*)pOutput;
+
+    if (!g_playing || g_local_deafened) {
+        memset(outBuf, 0, frameCount * sizeof(int16_t));
+        return;
     }
+
+    enter_cs();
+    mix_audio_streams(outBuf, frameCount);
+    leave_cs();
 }
 
-static UINT parse_input_device_id(const char* device_id) {
+static ma_device_id* find_capture_device_id(const char* device_id, ma_device_info* pCaptureInfos, ma_uint32 captureCount) {
     if (!device_id || strcmp(device_id, "default_input") == 0 || strlen(device_id) == 0) {
-        return WAVE_MAPPER;
+        return NULL;
     }
-    UINT devIdx = 0;
-    if (sscanf(device_id, "winmm_in_%u", &devIdx) == 1) {
-        return devIdx;
+    unsigned int devIdx = 0;
+    if (sscanf(device_id, "dev_in_%u", &devIdx) == 1 || sscanf(device_id, "winmm_in_%u", &devIdx) == 1) {
+        if (devIdx < captureCount) {
+            return &pCaptureInfos[devIdx].id;
+        }
     }
-    return WAVE_MAPPER;
+    for (ma_uint32 i = 0; i < captureCount; i++) {
+        if (strcmp(pCaptureInfos[i].name, device_id) == 0) {
+            return &pCaptureInfos[i].id;
+        }
+    }
+    return NULL;
 }
 
-static UINT parse_output_device_id(const char* device_id) {
+static ma_device_id* find_playback_device_id(const char* device_id, ma_device_info* pPlaybackInfos, ma_uint32 playbackCount) {
     if (!device_id || strcmp(device_id, "default_output") == 0 || strlen(device_id) == 0) {
-        return WAVE_MAPPER;
+        return NULL;
     }
-    UINT devIdx = 0;
-    if (sscanf(device_id, "winmm_out_%u", &devIdx) == 1) {
-        return devIdx;
+    unsigned int devIdx = 0;
+    if (sscanf(device_id, "dev_out_%u", &devIdx) == 1 || sscanf(device_id, "winmm_out_%u", &devIdx) == 1) {
+        if (devIdx < playbackCount) {
+            return &pPlaybackInfos[devIdx].id;
+        }
     }
-    return WAVE_MAPPER;
+    for (ma_uint32 i = 0; i < playbackCount; i++) {
+        if (strcmp(pPlaybackInfos[i].name, device_id) == 0) {
+            return &pPlaybackInfos[i].id;
+        }
+    }
+    return NULL;
 }
 
 static void start_hardware_capture(void) {
-    if (g_hWaveIn != NULL) return;
-
-    WAVEFORMATEX wfx;
-    memset(&wfx, 0, sizeof(wfx));
-    wfx.wFormatTag = WAVE_FORMAT_PCM;
-    wfx.nChannels = (WORD)(g_config.channels > 0 ? g_config.channels : 1);
-    wfx.nSamplesPerSec = g_config.sample_rate > 0 ? g_config.sample_rate : 48000;
-    wfx.wBitsPerSample = 16;
-    wfx.nBlockAlign = (WORD)(wfx.nChannels * (wfx.wBitsPerSample / 8));
-    wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
-
-    UINT devId = parse_input_device_id(g_input_device_id);
-    MMRESULT res = waveInOpen(&g_hWaveIn, devId, &wfx, (DWORD_PTR)waveInProc, 0, CALLBACK_FUNCTION);
-    if (res != MMSYSERR_NOERROR) {
-        g_hWaveIn = NULL;
-        return;
+    if (g_capture_device_initialized) return;
+    if (!g_ma_context_initialized) {
+        ma_context_config ctxConfig = ma_context_config_init();
+        if (ma_context_init(NULL, 0, &ctxConfig, &g_ma_context) != MA_SUCCESS) {
+            return;
+        }
+        g_ma_context_initialized = true;
     }
 
-    for (int i = 0; i < NUM_WAVE_BUFFERS; i++) {
-        memset(&g_inWaveHdr[i], 0, sizeof(WAVEHDR));
-        g_inWaveHdr[i].lpData = (LPSTR)g_inBuffers[i];
-        g_inWaveHdr[i].dwBufferLength = BUFFER_SIZE_BYTES;
-        waveInPrepareHeader(g_hWaveIn, &g_inWaveHdr[i], sizeof(WAVEHDR));
-        waveInAddBuffer(g_hWaveIn, &g_inWaveHdr[i], sizeof(WAVEHDR));
+    ma_device_info* pPlaybackInfos = NULL;
+    ma_uint32 playbackCount = 0;
+    ma_device_info* pCaptureInfos = NULL;
+    ma_uint32 captureCount = 0;
+    ma_device_id* pTargetId = NULL;
+
+    if (ma_context_get_devices(&g_ma_context, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount) == MA_SUCCESS) {
+        pTargetId = find_capture_device_id(g_input_device_id, pCaptureInfos, captureCount);
     }
 
-    waveInStart(g_hWaveIn);
+    ma_device_config config = ma_device_config_init(ma_device_type_capture);
+    config.capture.format = ma_format_s16;
+    config.capture.channels = (g_config.channels > 0) ? g_config.channels : 1;
+    config.sampleRate = (g_config.sample_rate > 0) ? g_config.sample_rate : 48000;
+    config.dataCallback = ma_capture_callback;
+    config.pUserData = NULL;
+    if (pTargetId != NULL) {
+        config.capture.pDeviceID = pTargetId;
+    }
+
+    if (ma_device_init(&g_ma_context, &config, &g_capture_device) == MA_SUCCESS) {
+        g_capture_device_initialized = true;
+        if (ma_device_start(&g_capture_device) != MA_SUCCESS) {
+            ma_device_uninit(&g_capture_device);
+            g_capture_device_initialized = false;
+        }
+    }
 }
 
 static void stop_hardware_capture(void) {
-    if (g_hWaveIn == NULL) return;
-
-    HWAVEIN h = g_hWaveIn;
-    g_hWaveIn = NULL;
-
-    waveInReset(h);
-    for (int i = 0; i < NUM_WAVE_BUFFERS; i++) {
-        waveInUnprepareHeader(h, &g_inWaveHdr[i], sizeof(WAVEHDR));
-    }
-    waveInClose(h);
+    if (!g_capture_device_initialized) return;
+    ma_device_stop(&g_capture_device);
+    ma_device_uninit(&g_capture_device);
+    g_capture_device_initialized = false;
 }
 
 static void start_hardware_playback(void) {
-    if (g_hWaveOut != NULL) return;
-
-    WAVEFORMATEX wfx;
-    memset(&wfx, 0, sizeof(wfx));
-    wfx.wFormatTag = WAVE_FORMAT_PCM;
-    wfx.nChannels = (WORD)(g_config.channels > 0 ? g_config.channels : 1);
-    wfx.nSamplesPerSec = g_config.sample_rate > 0 ? g_config.sample_rate : 48000;
-    wfx.wBitsPerSample = 16;
-    wfx.nBlockAlign = (WORD)(wfx.nChannels * (wfx.wBitsPerSample / 8));
-    wfx.nAvgBytesPerSec = wfx.nSamplesPerSec * wfx.nBlockAlign;
-
-    UINT devId = parse_output_device_id(g_output_device_id);
-    MMRESULT res = waveOutOpen(&g_hWaveOut, devId, &wfx, (DWORD_PTR)waveOutProc, 0, CALLBACK_FUNCTION);
-    if (res != MMSYSERR_NOERROR) {
-        g_hWaveOut = NULL;
-        return;
+    if (g_playback_device_initialized) return;
+    if (!g_ma_context_initialized) {
+        ma_context_config ctxConfig = ma_context_config_init();
+        if (ma_context_init(NULL, 0, &ctxConfig, &g_ma_context) != MA_SUCCESS) {
+            return;
+        }
+        g_ma_context_initialized = true;
     }
 
-    for (int i = 0; i < NUM_WAVE_BUFFERS; i++) {
-        memset(&g_outWaveHdr[i], 0, sizeof(WAVEHDR));
-        g_outWaveHdr[i].lpData = (LPSTR)g_outBuffers[i];
-        g_outWaveHdr[i].dwBufferLength = BUFFER_SIZE_BYTES;
-        waveOutPrepareHeader(g_hWaveOut, &g_outWaveHdr[i], sizeof(WAVEHDR));
+    ma_device_info* pPlaybackInfos = NULL;
+    ma_uint32 playbackCount = 0;
+    ma_device_info* pCaptureInfos = NULL;
+    ma_uint32 captureCount = 0;
+    ma_device_id* pTargetId = NULL;
 
-        // Pre-fill buffer and submit
-        enter_cs();
-        mix_audio_streams(g_outBuffers[i], SAMPLES_PER_FRAME);
-        leave_cs();
-        waveOutWrite(g_hWaveOut, &g_outWaveHdr[i], sizeof(WAVEHDR));
+    if (ma_context_get_devices(&g_ma_context, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount) == MA_SUCCESS) {
+        pTargetId = find_playback_device_id(g_output_device_id, pPlaybackInfos, playbackCount);
+    }
+
+    ma_device_config config = ma_device_config_init(ma_device_type_playback);
+    config.playback.format = ma_format_s16;
+    config.playback.channels = (g_config.channels > 0) ? g_config.channels : 1;
+    config.sampleRate = (g_config.sample_rate > 0) ? g_config.sample_rate : 48000;
+    config.dataCallback = ma_playback_callback;
+    config.pUserData = NULL;
+    if (pTargetId != NULL) {
+        config.playback.pDeviceID = pTargetId;
+    }
+
+    if (ma_device_init(&g_ma_context, &config, &g_playback_device) == MA_SUCCESS) {
+        g_playback_device_initialized = true;
+        if (ma_device_start(&g_playback_device) != MA_SUCCESS) {
+            ma_device_uninit(&g_playback_device);
+            g_playback_device_initialized = false;
+        }
     }
 }
 
 static void stop_hardware_playback(void) {
-    if (g_hWaveOut == NULL) return;
-
-    HWAVEOUT h = g_hWaveOut;
-    g_hWaveOut = NULL;
-
-    waveOutReset(h);
-    for (int i = 0; i < NUM_WAVE_BUFFERS; i++) {
-        waveOutUnprepareHeader(h, &g_outWaveHdr[i], sizeof(WAVEHDR));
-    }
-    waveOutClose(h);
+    if (!g_playback_device_initialized) return;
+    ma_device_stop(&g_playback_device);
+    ma_device_uninit(&g_playback_device);
+    g_playback_device_initialized = false;
 }
-
-#else
-static void enter_cs(void) {}
-static void leave_cs(void) {}
-static void start_hardware_capture(void) {}
-static void stop_hardware_capture(void) {}
-static void start_hardware_playback(void) {}
-static void stop_hardware_playback(void) {}
-#endif
 
 VOICE_API int32_t voice_engine_init(const AudioEngineConfig* config) {
     if (!config) return -1;
 
-#ifdef _WIN32
-    if (!g_cs_initialized) {
-        InitializeCriticalSection(&g_audio_cs);
-        g_cs_initialized = true;
-    }
-#endif
+    init_cs();
 
     g_config = *config;
     if (g_config.sample_rate == 0) g_config.sample_rate = 48000;
@@ -268,6 +313,13 @@ VOICE_API int32_t voice_engine_init(const AudioEngineConfig* config) {
     g_capture_write_idx = 0;
     leave_cs();
 
+    if (!g_ma_context_initialized) {
+        ma_context_config ctxConfig = ma_context_config_init();
+        if (ma_context_init(NULL, 0, &ctxConfig, &g_ma_context) == MA_SUCCESS) {
+            g_ma_context_initialized = true;
+        }
+    }
+
     g_initialized = true;
     return 0;
 }
@@ -275,62 +327,49 @@ VOICE_API int32_t voice_engine_init(const AudioEngineConfig* config) {
 VOICE_API void voice_engine_destroy(void) {
     voice_engine_stop_capture();
     voice_engine_stop_playback();
+
+    if (g_ma_context_initialized) {
+        ma_context_uninit(&g_ma_context);
+        g_ma_context_initialized = false;
+    }
+
     g_mic_test_loopback = false;
     g_initialized = false;
 
-#ifdef _WIN32
-    if (g_cs_initialized) {
-        DeleteCriticalSection(&g_audio_cs);
-        g_cs_initialized = false;
-    }
-#endif
+    destroy_cs();
 }
 
 VOICE_API int32_t voice_engine_get_input_devices(AudioDeviceInfo* devices, int32_t max_count) {
     if (!devices || max_count < 1) return 0;
-
     int32_t count = 0;
 
-#ifdef _WIN32
-    UINT numDevs = waveInGetNumDevs();
-    if (numDevs > 0) {
-        // Default Primary Device
-        snprintf(devices[count].id, sizeof(devices[count].id), "default_input");
-        snprintf(devices[count].name, sizeof(devices[count].name), "Default System Microphone (WASAPI / DirectSound)");
-        devices[count].is_default = true;
-        count++;
-
-        for (UINT i = 0; i < numDevs && count < max_count; i++) {
-            WAVEINCAPSW caps;
-            if (waveInGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-                snprintf(devices[count].id, sizeof(devices[count].id), "winmm_in_%u", i);
-                WideCharToMultiByte(CP_UTF8, 0, caps.szPname, -1, devices[count].name, sizeof(devices[count].name), NULL, NULL);
-                devices[count].is_default = false;
-                count++;
-            }
+    if (!g_ma_context_initialized) {
+        ma_context_config ctxConfig = ma_context_config_init();
+        if (ma_context_init(NULL, 0, &ctxConfig, &g_ma_context) == MA_SUCCESS) {
+            g_ma_context_initialized = true;
         }
-        return count;
     }
-#endif
 
-    // Fallback devices when no hardware or on non-Windows platforms
+    // Default Primary Device
     snprintf(devices[count].id, sizeof(devices[count].id), "default_input");
-    snprintf(devices[count].name, sizeof(devices[count].name), "Default System Microphone (Built-in Audio)");
+    snprintf(devices[count].name, sizeof(devices[count].name), "Default System Microphone");
     devices[count].is_default = true;
     count++;
 
-    if (count < max_count) {
-        snprintf(devices[count].id, sizeof(devices[count].id), "headset_mic");
-        snprintf(devices[count].name, sizeof(devices[count].name), "Headset Microphone (Realtek Audio)");
-        devices[count].is_default = false;
-        count++;
-    }
+    if (g_ma_context_initialized) {
+        ma_device_info* pPlaybackInfos = NULL;
+        ma_uint32 playbackCount = 0;
+        ma_device_info* pCaptureInfos = NULL;
+        ma_uint32 captureCount = 0;
 
-    if (count < max_count) {
-        snprintf(devices[count].id, sizeof(devices[count].id), "usb_mic");
-        snprintf(devices[count].name, sizeof(devices[count].name), "USB Studio Microphone (High Definition)");
-        devices[count].is_default = false;
-        count++;
+        if (ma_context_get_devices(&g_ma_context, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount) == MA_SUCCESS) {
+            for (ma_uint32 i = 0; i < captureCount && count < max_count; i++) {
+                snprintf(devices[count].id, sizeof(devices[count].id), "dev_in_%u", i);
+                snprintf(devices[count].name, sizeof(devices[count].name), "%s", pCaptureInfos[i].name);
+                devices[count].is_default = (pCaptureInfos[i].isDefault != 0);
+                count++;
+            }
+        }
     }
 
     return count;
@@ -338,49 +377,35 @@ VOICE_API int32_t voice_engine_get_input_devices(AudioDeviceInfo* devices, int32
 
 VOICE_API int32_t voice_engine_get_output_devices(AudioDeviceInfo* devices, int32_t max_count) {
     if (!devices || max_count < 1) return 0;
-
     int32_t count = 0;
 
-#ifdef _WIN32
-    UINT numDevs = waveOutGetNumDevs();
-    if (numDevs > 0) {
-        // Default Primary Device
-        snprintf(devices[count].id, sizeof(devices[count].id), "default_output");
-        snprintf(devices[count].name, sizeof(devices[count].name), "Default System Speakers (WASAPI / DirectSound)");
-        devices[count].is_default = true;
-        count++;
-
-        for (UINT i = 0; i < numDevs && count < max_count; i++) {
-            WAVEOUTCAPSW caps;
-            if (waveOutGetDevCapsW(i, &caps, sizeof(caps)) == MMSYSERR_NOERROR) {
-                snprintf(devices[count].id, sizeof(devices[count].id), "winmm_out_%u", i);
-                WideCharToMultiByte(CP_UTF8, 0, caps.szPname, -1, devices[count].name, sizeof(devices[count].name), NULL, NULL);
-                devices[count].is_default = false;
-                count++;
-            }
+    if (!g_ma_context_initialized) {
+        ma_context_config ctxConfig = ma_context_config_init();
+        if (ma_context_init(NULL, 0, &ctxConfig, &g_ma_context) == MA_SUCCESS) {
+            g_ma_context_initialized = true;
         }
-        return count;
     }
-#endif
 
-    // Fallback devices when no hardware or on non-Windows platforms
+    // Default Primary Device
     snprintf(devices[count].id, sizeof(devices[count].id), "default_output");
-    snprintf(devices[count].name, sizeof(devices[count].name), "Default System Speakers (Built-in Audio)");
+    snprintf(devices[count].name, sizeof(devices[count].name), "Default System Speakers");
     devices[count].is_default = true;
     count++;
 
-    if (count < max_count) {
-        snprintf(devices[count].id, sizeof(devices[count].id), "headphones");
-        snprintf(devices[count].name, sizeof(devices[count].name), "Headphones / Headset (Realtek Audio)");
-        devices[count].is_default = false;
-        count++;
-    }
+    if (g_ma_context_initialized) {
+        ma_device_info* pPlaybackInfos = NULL;
+        ma_uint32 playbackCount = 0;
+        ma_device_info* pCaptureInfos = NULL;
+        ma_uint32 captureCount = 0;
 
-    if (count < max_count) {
-        snprintf(devices[count].id, sizeof(devices[count].id), "line_out");
-        snprintf(devices[count].name, sizeof(devices[count].name), "Digital Line Out (High Definition Audio)");
-        devices[count].is_default = false;
-        count++;
+        if (ma_context_get_devices(&g_ma_context, &pPlaybackInfos, &playbackCount, &pCaptureInfos, &captureCount) == MA_SUCCESS) {
+            for (ma_uint32 i = 0; i < playbackCount && count < max_count; i++) {
+                snprintf(devices[count].id, sizeof(devices[count].id), "dev_out_%u", i);
+                snprintf(devices[count].name, sizeof(devices[count].name), "%s", pPlaybackInfos[i].name);
+                devices[count].is_default = (pPlaybackInfos[i].isDefault != 0);
+                count++;
+            }
+        }
     }
 
     return count;
@@ -388,8 +413,10 @@ VOICE_API int32_t voice_engine_get_output_devices(AudioDeviceInfo* devices, int3
 
 VOICE_API int32_t voice_engine_set_input_device(const char* device_id) {
     if (!device_id) return -1;
+    enter_cs();
     strncpy(g_input_device_id, device_id, sizeof(g_input_device_id) - 1);
     g_input_device_id[sizeof(g_input_device_id) - 1] = '\0';
+    leave_cs();
 
     if (g_capturing) {
         stop_hardware_capture();
@@ -400,8 +427,10 @@ VOICE_API int32_t voice_engine_set_input_device(const char* device_id) {
 
 VOICE_API int32_t voice_engine_set_output_device(const char* device_id) {
     if (!device_id) return -1;
+    enter_cs();
     strncpy(g_output_device_id, device_id, sizeof(g_output_device_id) - 1);
     g_output_device_id[sizeof(g_output_device_id) - 1] = '\0';
+    leave_cs();
 
     if (g_playing) {
         stop_hardware_playback();
@@ -642,26 +671,24 @@ VOICE_API int32_t voice_engine_capture_frame(
     }
     leave_cs();
 
-    double sum_sq = 0.0;
-
     if (!has_hardware_samples) {
-        // Fallback tone synthesis for headless / test / fallback environments
-        for (uint32_t i = 0; i < frame_samples; i++) {
-            double sample_val = 6000.0 * sin(g_synth_phase);
-            g_synth_phase += 2.0 * 3.141592653589793 * 440.0 / 48000.0;
-            if (g_synth_phase > 2.0 * 3.141592653589793) {
-                g_synth_phase -= 2.0 * 3.141592653589793;
-            }
+        // When hardware samples are unavailable, zero the buffer, set level to -90.0 dBFS, speaking = false, energy = 0
+        memset(pcm_out, 0, frame_samples * sizeof(int16_t));
+        g_hangover_ms_left = 0;
+        g_stats.input_level_db = -90.0f;
+        g_stats.is_speaking = false;
+        g_stats.packets_sent++;
+        if (out_level_db) *out_level_db = -90.0f;
+        if (out_is_speaking) *out_is_speaking = false;
+        if (out_energy_level) *out_energy_level = 0;
+        return (int32_t)(frame_samples * sizeof(int16_t));
+    }
 
-            int16_t s = (int16_t)sample_val;
-            pcm_out[i] = s;
-            sum_sq += ((double)s) * ((double)s);
-        }
-    } else {
-        for (uint32_t i = 0; i < frame_samples; i++) {
-            int16_t s = pcm_out[i];
-            sum_sq += ((double)s) * ((double)s);
-        }
+    // Process real hardware samples
+    double sum_sq = 0.0;
+    for (uint32_t i = 0; i < frame_samples; i++) {
+        int16_t s = pcm_out[i];
+        sum_sq += ((double)s) * ((double)s);
     }
 
     double rms = sqrt(sum_sq / (double)frame_samples);
@@ -735,42 +762,50 @@ VOICE_API void voice_engine_get_stats(AudioEngineStats* stats) {
     }
 }
 
-// Internal Software Audio Mixer with Soft-Clipping Limiter
+// Internal Software Audio Mixer with Soft-Clipping Limiter (supports chunked processing for arbitrary frame_samples)
 void mix_audio_streams(int16_t* output_buffer, uint32_t frame_samples) {
     if (!output_buffer || frame_samples == 0 || g_local_deafened) {
         if (output_buffer) memset(output_buffer, 0, frame_samples * sizeof(int16_t));
         return;
     }
 
-    float mix_accumulator[SAMPLES_PER_FRAME];
-    uint32_t samples = frame_samples > SAMPLES_PER_FRAME ? SAMPLES_PER_FRAME : frame_samples;
-    memset(mix_accumulator, 0, samples * sizeof(float));
+    uint32_t samples_remaining = frame_samples;
+    uint32_t out_offset = 0;
 
-    for (int i = 0; i < MAX_PEERS; i++) {
-        if (!g_peers[i].is_active) continue;
-        if (i == 0 && !g_mic_test_loopback) continue;
+    while (samples_remaining > 0) {
+        uint32_t chunk = (samples_remaining > SAMPLES_PER_FRAME) ? SAMPLES_PER_FRAME : samples_remaining;
+        float mix_accumulator[SAMPLES_PER_FRAME];
+        memset(mix_accumulator, 0, chunk * sizeof(float));
 
-        float gain = g_peers[i].user_volume;
-        for (uint32_t s = 0; s < samples; s++) {
-            if (g_peers[i].read_idx != g_peers[i].write_idx) {
-                int16_t pcm = g_peers[i].buffer[g_peers[i].read_idx];
-                g_peers[i].read_idx = (g_peers[i].read_idx + 1) % RING_BUFFER_SIZE;
-                mix_accumulator[s] += ((float)pcm) * gain;
+        for (int i = 0; i < MAX_PEERS; i++) {
+            if (!g_peers[i].is_active) continue;
+            if (i == 0 && !g_mic_test_loopback) continue;
+
+            float gain = g_peers[i].user_volume;
+            for (uint32_t s = 0; s < chunk; s++) {
+                if (g_peers[i].read_idx != g_peers[i].write_idx) {
+                    int16_t pcm = g_peers[i].buffer[g_peers[i].read_idx];
+                    g_peers[i].read_idx = (g_peers[i].read_idx + 1) % RING_BUFFER_SIZE;
+                    mix_accumulator[s] += ((float)pcm) * gain;
+                }
             }
         }
-    }
 
-    // Cubic polynomial soft limiter to prevent digital clipping
-    for (uint32_t s = 0; s < samples; s++) {
-        float x = mix_accumulator[s] / 32768.0f;
-        float y;
-        if (x > 1.0f) {
-            y = 1.0f;
-        } else if (x < -1.0f) {
-            y = -1.0f;
-        } else {
-            y = x - (x * x * x) / 3.0f;
+        // Cubic polynomial soft limiter to prevent digital clipping
+        for (uint32_t s = 0; s < chunk; s++) {
+            float x = mix_accumulator[s] / 32768.0f;
+            float y;
+            if (x > 1.0f) {
+                y = 1.0f;
+            } else if (x < -1.0f) {
+                y = -1.0f;
+            } else {
+                y = x - (x * x * x) / 3.0f;
+            }
+            output_buffer[out_offset + s] = (int16_t)(y * 32767.0f);
         }
-        output_buffer[s] = (int16_t)(y * 32767.0f);
+
+        out_offset += chunk;
+        samples_remaining -= chunk;
     }
 }

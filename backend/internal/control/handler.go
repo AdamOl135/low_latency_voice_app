@@ -266,7 +266,7 @@ func (h *Hub) handleAuth(c *Client, reqID interface{}, params map[string]interfa
 		"is_admin":    isAdmin,
 		"roles":       roles,
 		"permissions": perms,
-		"udp_port":    7878,
+		"udp_port":    h.authService.UDPPort(),
 	}))
 
 	h.BroadcastEvent("presence_update", map[string]interface{}{
@@ -538,7 +538,7 @@ func (h *Hub) handleJoinVoice(c *Client, reqID interface{}, params map[string]in
 	c.SendJSON(NewSuccessResponse(reqID, "join_voice", map[string]interface{}{
 		"channel_id": channelID,
 		"udp_token":  vt.Token,
-		"udp_port":   7878,
+		"udp_port":   h.authService.UDPPort(),
 		"ssrc":       vt.SSRC,
 	}))
 

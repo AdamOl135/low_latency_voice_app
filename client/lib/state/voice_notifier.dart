@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../core/constants.dart';
 import '../services/audio_engine.dart';
 import '../services/voice_client.dart';
 import '../services/websocket_service.dart';
@@ -135,7 +136,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
       if (packet.senderId == currentUserId || packet.senderId == 0) return;
 
       if (!state.isDeafened) {
-        _audioEngine.feedInboundPacket(packet.encode());
+        _audioEngine.feedInboundPacket(packet.rawBytes ?? packet.encode());
       }
     });
 
@@ -253,7 +254,7 @@ class VoiceNotifier extends StateNotifier<VoiceStateModel> {
 
       final data = (res['data'] is Map) ? res['data'] as Map<String, dynamic> : res;
       final udpToken = data['udp_token']?.toString() ?? '';
-      final udpPort = data['udp_port'] is int ? data['udp_port'] as int : 7878;
+      final udpPort = data['udp_port'] is int ? data['udp_port'] as int : AppConstants.defaultUdpPort;
       final user = _ref.read(authProvider).user;
 
       if (user != null) {

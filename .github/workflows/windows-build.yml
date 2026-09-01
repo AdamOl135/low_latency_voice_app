@@ -1,0 +1,176 @@
+name: Windows Build & Distribution
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows Desktop App
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter SDK
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Enable Windows Desktop Support
+        shell: pwsh
+        run: |
+          Write-Host "Enabling Flutter Windows desktop support..."
+          flutter config --enable-windows-desktop
+          flutter doctor -v
+
+      - name: Compile Native Audio Engine (voice_engine.dll)
+        shell: pwsh
+        run: |
+          Write-Host "Configuring and compiling native voice_engine.dll with CMake..."
+          $NativeBuildDir = "client/native/build"
+          New-Item -ItemType Directory -Force -Path $NativeBuildDir | Out-Null
+          Set-Location $NativeBuildDir
+
+          cmake .. -DCMAKE_BUILD_TYPE=Release
+          if ($LASTEXITCODE -ne 0) {
+              throw "CMake configuration failed with exit code $LASTEXITCODE"
+          }
+
+          cmake --build . --config Release --verbose
+          if ($LASTEXITCODE -ne 0) {
+              throw "CMake build failed with exit code $LASTEXITCODE"
+          }
+
+          if (Test-Path "Release/voice_engine.dll") {
+              Write-Host "[OK] Found voice_engine.dll in Release/" -ForegroundColor Green
+          } elseif (Test-Path "voice_engine.dll") {
+              Write-Host "[OK] Found voice_engine.dll in build root" -ForegroundColor Green
+          } else {
+              throw "voice_engine.dll was not generated in $NativeBuildDir!"
+          }
+
+      - name: Build Flutter Windows Client
+        shell: pwsh
+        run: |
+          Set-Location client
+          Write-Host "Resolving Flutter dependencies..."
+          flutter pub get
+          if ($LASTEXITCODE -ne 0) {
+              throw "flutter pub get failed with exit code $LASTEXITCODE"
+          }
+
+          Write-Host "Building Windows Release binary..."
+          flutter build windows --release
+          if ($LASTEXITCODE -ne 0) {
+              throw "flutter build windows failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Bundle and Package Windows Distribution
+        shell: pwsh
+        run: |
+          # 1. Parse Version & Commit SHA
+          $Version = "1.0.0"
+          if (Test-Path "client/pubspec.yaml") {
+              $Match = (Select-String -Path "client/pubspec.yaml" -Pattern "^version:\s*(\S+)").Matches
+              if ($Match.Groups.Count -gt 1) {
+                  $Version = $Match.Groups[1].Value.Split('+')[0]
+              }
+          }
+          $ShortSha = "${{ github.sha }}".Substring(0, [System.Math]::Min(7, "${{ github.sha }}".Length))
+          if (-not $ShortSha) { $ShortSha = "latest" }
+
+          Write-Host "Packaging application version: v$Version ($ShortSha)" -ForegroundColor Cyan
+
+          # 2. Locate Flutter Release Directory
+          $ReleaseDir = "client/build/windows/x64/runner/Release"
+          if (-not (Test-Path $ReleaseDir)) {
+              if (Test-Path "client/build/windows/runner/Release") {
+                  $ReleaseDir = "client/build/windows/runner/Release"
+              } else {
+                  throw "Flutter release directory not found at $ReleaseDir"
+              }
+          }
+          Write-Host "Found Flutter release output in: $ReleaseDir" -ForegroundColor Green
+
+          # 3. Ensure voice_engine.dll is copied into Release directory
+          $DllCopied = $false
+          $DllCandidates = @(
+              "client/native/build/Release/voice_engine.dll",
+              "client/native/build/voice_engine.dll",
+              "client/native/build/bin/Release/voice_engine.dll",
+              "client/native/build/bin/voice_engine.dll"
+          )
+          foreach ($cand in $DllCandidates) {
+              if (Test-Path $cand) {
+                  Copy-Item -Force $cand "$ReleaseDir/voice_engine.dll"
+                  $DllCopied = $true
+                  Write-Host "[OK] Copied $cand -> $ReleaseDir/voice_engine.dll" -ForegroundColor Green
+                  break
+              }
+          }
+
+          if (-not $DllCopied -and -not (Test-Path "$ReleaseDir/voice_engine.dll")) {
+              throw "Could not locate built voice_engine.dll to bundle into release!"
+          }
+
+          # 4. Create staging distribution directory
+          $DistDir = "dist"
+          $PackageName = "low_latency_voice_app-v$Version-$ShortSha-windows-x64"
+          $StageDir = "$DistDir/$PackageName"
+          if (Test-Path $StageDir) { Remove-Item -Recurse -Force $StageDir }
+          New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
+
+          # 5. Copy all Release bundle files into staging directory
+          Copy-Item -Path "$ReleaseDir\*" -Destination $StageDir -Recurse -Force
+
+          # 6. Verify critical files exist
+          $RequiredFiles = @("low_latency_voice_app.exe", "voice_engine.dll", "flutter_windows.dll")
+          foreach ($file in $RequiredFiles) {
+              if (-not (Test-Path "$StageDir/$file")) {
+                  throw "Required runtime file '$file' is missing in $StageDir!"
+              }
+          }
+
+          # 7. Add Quick Start README
+          $ReadmeContent = @(
+              "====================================================================",
+              "  Low-Latency Voice & Text Desktop App (Windows x64)",
+              "  Version: v$Version (Commit: $ShortSha)",
+              "====================================================================",
+              "",
+              "Quick Start:",
+              "  1. Extract this zip archive to any folder.",
+              "  2. Double-click 'low_latency_voice_app.exe' to launch.",
+              "",
+              "Prerequisites:",
+              "  None. All required runtime files and native audio engines",
+              "  are self-contained in this bundle.",
+              "",
+              "Default Server Endpoints:",
+              "  - WebSocket Control Plane: ws://<SERVER_IP>:8085/ws",
+              "  - UDP Voice SFU Stream:   <SERVER_IP>:7878/udp",
+              "===================================================================="
+          )
+          $ReadmeContent | Set-Content -Path "$StageDir/README.txt" -Encoding utf8
+
+          # 8. Create zip archive
+          $ZipPath = "$DistDir/$PackageName.zip"
+          if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
+          Write-Host "Creating distribution zip archive: $ZipPath"
+          Compress-Archive -Path "$StageDir\*" -DestinationPath $ZipPath -Force
+
+          # 9. List package contents for build verification
+          Write-Host "`nStaged Files Summary:" -ForegroundColor Cyan
+          Get-ChildItem -Recurse $StageDir | Select-Object Name, Length | Format-Table -AutoSize
+          Write-Host "Generated Zip: $ZipPath ($((Get-Item $ZipPath).Length) bytes)" -ForegroundColor Green
+
+      - name: Upload Windows Distribution Zip Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: low_latency_voice_app-windows-x64-${{ github.sha }}
+          path: dist/*.zip
+          if-no-files-found: error

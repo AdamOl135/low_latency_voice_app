@@ -46,6 +46,23 @@ void main() {
       expect(decoded.sequence, equals(1337));
       expect(decoded.timestamp, equals(48000));
       expect(decoded.payload, equals(payload));
+      expect(decoded.rawBytes, equals(encoded));
+    });
+
+    test('VoicePacket.decode preserves raw datagram in rawBytes field (R5)', () {
+      final payload = Uint8List.fromList([1, 2, 3, 4, 5, 6, 7, 8]);
+      final packet = VoicePacket(
+        type: AppConstants.packetTypeVoice,
+        senderId: 10,
+        channelId: 20,
+        sequence: 100,
+        timestamp: 200,
+        payload: payload,
+      );
+      final raw = packet.encode();
+      final decoded = VoicePacket.decode(raw);
+      expect(decoded.rawBytes, isNotNull);
+      expect(identical(decoded.rawBytes, raw), isTrue);
     });
 
     test('HandshakePacket encode and decode with token payload', () {

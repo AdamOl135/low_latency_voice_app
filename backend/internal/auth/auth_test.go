@@ -171,3 +171,23 @@ func TestAuth_GenerateUDPToken(t *testing.T) {
 		t.Errorf("unexpected voice token: %+v", vt)
 	}
 }
+
+func TestAuthService_UDPPortMethod(t *testing.T) {
+	db, err := storage.OpenDB(fmt.Sprintf("file:memauth_port_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	defer db.Close()
+	repo := storage.NewSQLiteRepository(db)
+
+	svc1 := NewAuthService(repo, 9876)
+	if svc1.UDPPort() != 9876 {
+		t.Errorf("expected UDPPort 9876, got %d", svc1.UDPPort())
+	}
+
+	svc2 := NewAuthService(repo, 0)
+	if svc2.UDPPort() != 7878 {
+		t.Errorf("expected default UDPPort 7878, got %d", svc2.UDPPort())
+	}
+}
+

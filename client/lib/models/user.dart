@@ -1,3 +1,5 @@
+import '../core/constants.dart';
+
 /// Model representing an authenticated user account and session.
 class User {
   final int id;
@@ -15,7 +17,7 @@ class User {
     this.roles = const [],
     this.permissions = 0,
     this.isAdmin = false,
-    this.udpPort = 7878,
+    this.udpPort = AppConstants.defaultUdpPort,
   });
 
   factory User.fromJson(Map<String, dynamic> json) {
@@ -33,7 +35,7 @@ class User {
           ? json['permissions'] as int
           : 0,
       isAdmin: json['is_admin'] == true,
-      udpPort: (json['udp_port'] is int) ? json['udp_port'] as int : 7878,
+      udpPort: (json['udp_port'] is int) ? json['udp_port'] as int : AppConstants.defaultUdpPort,
     );
   }
 

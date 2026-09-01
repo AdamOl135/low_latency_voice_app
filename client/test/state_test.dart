@@ -1,3 +1,4 @@
+import 'dart:typed_data';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:low_latency_voice_app/core/constants.dart';
@@ -337,6 +338,80 @@ void main() {
       expect(container.read(settingsProvider).isTestingMic, isFalse);
 
       container.dispose();
+    });
+  });
+
+  group('Requirements R4 & R5 Client Unit Tests', () {
+    test('User model defaults to AppConstants.defaultUdpPort (R4)', () {
+      const user = User(id: 1, username: 'testuser');
+      expect(user.udpPort, equals(AppConstants.defaultUdpPort));
+      expect(user.udpPort, equals(7878));
+
+      final jsonUser = User.fromJson({'user_id': 2, 'username': 'jsonuser'});
+      expect(jsonUser.udpPort, equals(AppConstants.defaultUdpPort));
+    });
+
+    test('SettingsNotifier preserves AppConstants.defaultWsPort and defaultHost (R4)', () {
+      final engine = AudioEngineService();
+      final vad = VadService();
+      final ptt = PttService();
+      final notifier = SettingsNotifier(engine, vad, ptt);
+
+      expect(notifier.state.serverHost, equals(AppConstants.defaultHost));
+      expect(notifier.state.serverHost, equals('100.108.39.69'));
+      expect(notifier.state.serverWsPort, equals(AppConstants.defaultWsPort));
+      expect(notifier.state.serverWsPort, equals(8085));
+
+      notifier.dispose();
+      vad.dispose();
+      ptt.dispose();
+      engine.destroy();
+    });
+
+    test('VoicePacket rawBytes is passed without re-encoding to AudioEngine (R5)', () async {
+      final ws = WebSocketService();
+      final voiceClient = VoiceClient();
+      final audioEngine = AudioEngineService();
+      final container = ProviderContainer(
+        overrides: [
+          webSocketServiceProvider.overrideWithValue(ws),
+          voiceClientProvider.overrideWithValue(voiceClient),
+          audioEngineProvider.overrideWithValue(audioEngine),
+          authProvider.overrideWith((ref) {
+            final notifier = AuthNotifier(ws);
+            notifier.state = const AuthState(
+              isAuthenticated: true,
+              user: User(id: 1, username: 'LocalUser'),
+            );
+            return notifier;
+          }),
+        ],
+      );
+
+      final voiceNotifier = container.read(voiceProvider.notifier);
+      voiceNotifier.state = voiceNotifier.state.copyWith(
+        status: VoiceConnectionStatus.connected,
+        connectedChannelId: 10,
+      );
+
+      final peerPayload = Uint8List.fromList([10, 20, 30, 40]);
+      final peerPacket = VoicePacket(
+        type: AppConstants.packetTypeVoice,
+        senderId: 2,
+        channelId: 10,
+        sequence: 1,
+        timestamp: 1000,
+        payload: peerPayload,
+      );
+      final rawDatagram = peerPacket.encode();
+      final inboundPacket = VoicePacket.decode(rawDatagram);
+
+      expect(inboundPacket.rawBytes, equals(rawDatagram));
+
+      container.dispose();
+      audioEngine.destroy();
+      voiceClient.dispose();
+      ws.dispose();
     });
   });
 }

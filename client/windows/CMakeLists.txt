@@ -52,6 +52,11 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# Include native C audio engine subproject if available
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../native/CMakeLists.txt")
+  add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../native" "${CMAKE_CURRENT_BINARY_DIR}/native_voice_engine")
+  install(TARGETS voice_engine RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}" COMPONENT Runtime)
+endif()
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.

@@ -249,27 +249,39 @@ class AudioEngineService {
 
   void _loadDynamicLibrary() {
     final candidatePaths = <String>[];
-    if (Platform.isWindows) {
-      candidatePaths.addAll([
-        'voice_engine.dll',
-        '${Directory.current.path}\\voice_engine.dll',
-        '${Directory.current.path}\\native\\build\\Release\\voice_engine.dll',
-        '${Directory.current.path}\\client\\native\\build\\Release\\voice_engine.dll',
-        '${Directory.current.path}\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
-        '${Directory.current.path}\\client\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
-      ]);
-    } else if (Platform.isLinux) {
-      candidatePaths.addAll([
-        'libvoice_engine.so',
-        '${Directory.current.path}/libvoice_engine.so',
-        '${Directory.current.path}/native/build/libvoice_engine.so',
-      ]);
-    } else if (Platform.isMacOS) {
-      candidatePaths.addAll([
-        'libvoice_engine.dylib',
-        '${Directory.current.path}/libvoice_engine.dylib',
-      ]);
-    }
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      if (Platform.isWindows) {
+        candidatePaths.addAll([
+          'voice_engine.dll',
+          '$exeDir\\voice_engine.dll',
+          '$exeDir\\data\\voice_engine.dll',
+          '${Directory.current.path}\\voice_engine.dll',
+          '${Directory.current.path}\\native\\build\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\client\\native\\build\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
+          '${Directory.current.path}\\client\\build\\windows\\x64\\runner\\Release\\voice_engine.dll',
+        ]);
+      } else if (Platform.isLinux) {
+        candidatePaths.addAll([
+          'libvoice_engine.so',
+          '$exeDir/lib/libvoice_engine.so',
+          '$exeDir/libvoice_engine.so',
+          '${Directory.current.path}/libvoice_engine.so',
+          '${Directory.current.path}/native/build/libvoice_engine.so',
+          '${Directory.current.path}/client/native/build/libvoice_engine.so',
+          '${Directory.current.path}/build/linux/x64/release/bundle/lib/libvoice_engine.so',
+          '${Directory.current.path}/client/build/linux/x64/release/bundle/lib/libvoice_engine.so',
+        ]);
+      } else if (Platform.isMacOS) {
+        candidatePaths.addAll([
+          'libvoice_engine.dylib',
+          '$exeDir/../Frameworks/libvoice_engine.dylib',
+          '$exeDir/libvoice_engine.dylib',
+          '${Directory.current.path}/libvoice_engine.dylib',
+        ]);
+      }
+    } catch (_) {}
 
     for (final path in candidatePaths) {
       try {

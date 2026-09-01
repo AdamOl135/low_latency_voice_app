@@ -137,8 +137,24 @@ func (r *Router) handleVoice(pkt *Packet, rawData []byte, srcAddr net.Addr) erro
 	return nil
 }
 
-// handlePing responds immediately with TypePong (0x03) preserving timestamp and payload for RTT probe.
+// handlePing responds immediately with TypePong (0x03) preserving timestamp and payload for RTT probe,
+// and refreshes the sender session's LastSeen timestamp to keep silent listeners alive.
 func (r *Router) handlePing(pkt *Packet, srcAddr net.Addr) error {
+	if r.sessions != nil {
+		session := r.sessions.GetByUser(pkt.SenderID)
+		if session == nil && srcAddr != nil {
+			session = r.sessions.GetByAddr(srcAddr)
+		}
+		if session != nil {
+			currentAddr := session.GetAddr()
+			if srcAddr != nil && (currentAddr == nil || currentAddr.String() != srcAddr.String()) {
+				r.sessions.UpdateAddr(session.UserID, srcAddr)
+			} else {
+				session.Touch()
+			}
+		}
+	}
+
 	if r.writer == nil {
 		return nil
 	}

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../core/constants.dart';
 import '../../core/theme.dart';
 import '../../models/audio_device.dart';
 import '../../services/ptt_service.dart';
@@ -409,7 +410,7 @@ class _AudioSettingsDialogState extends ConsumerState<AudioSettingsDialog> {
                   const SizedBox(width: 12),
                   ElevatedButton(
                     onPressed: () {
-                      final port = int.tryParse(_portController.text) ?? 8080;
+                      final port = int.tryParse(_portController.text) ?? AppConstants.defaultWsPort;
                       settingsNotifier.setServerEndpoint(_hostController.text, port);
                       Navigator.of(context).pop();
                     },

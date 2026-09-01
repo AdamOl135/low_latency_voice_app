@@ -42,6 +42,7 @@ type Service interface {
 	ValidateSession(token string) (*model.Session, error)
 	GenerateUDPToken(userID, channelID uint32) (*model.VoiceToken, error)
 	GenerateSessionToken() (string, error)
+	UDPPort() int
 }
 
 type AuthService struct {
@@ -57,6 +58,14 @@ func NewAuthService(storage storage.Repository, udpPort int) *AuthService {
 		storage: storage,
 		udpPort: udpPort,
 	}
+}
+
+// UDPPort returns the configured UDP audio port.
+func (s *AuthService) UDPPort() int {
+	if s.udpPort == 0 {
+		return 7878
+	}
+	return s.udpPort
 }
 
 func (s *AuthService) Register(username, password, clientVersion string) (*AuthResult, error) {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:low_latency_voice_app/core/constants.dart';
 import 'package:low_latency_voice_app/core/theme.dart';
 import 'package:low_latency_voice_app/main.dart';
 import 'package:low_latency_voice_app/models/channel.dart';
@@ -326,5 +327,49 @@ void main() {
     });
 
     expect(greenBorders.length, greaterThanOrEqualTo(2)); // Present in both ChannelsPane and RosterPane
+  });
+
+  testWidgets('AudioSettingsDialog falls back to AppConstants.defaultWsPort on invalid port (R4)', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 1000));
+    final container = ProviderContainer();
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          theme: AppTheme.darkTheme,
+          home: const Scaffold(
+            body: Center(
+              child: AudioSettingsDialog(),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Scroll down the ListView to bring server settings into view
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pumpAndSettle();
+
+    final textFields = find.byType(TextField);
+    expect(textFields, findsNWidgets(2));
+    final portField = textFields.at(1);
+
+    // Clear port input to test fallback
+    await tester.enterText(portField, '');
+    await tester.pumpAndSettle();
+
+    // Tap Save Changes
+    final saveButton = find.widgetWithText(ElevatedButton, 'Save Changes');
+    expect(saveButton, findsOneWidget);
+    await tester.tap(saveButton);
+    await tester.pumpAndSettle();
+
+    // Verify settingsNotifier received AppConstants.defaultWsPort (8085)
+    expect(container.read(settingsProvider).serverWsPort, equals(AppConstants.defaultWsPort));
+    expect(container.read(settingsProvider).serverWsPort, equals(8085));
+
+    container.dispose();
   });
 }

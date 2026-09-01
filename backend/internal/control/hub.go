@@ -345,3 +345,12 @@ func (h *Hub) BroadcastVoiceState(channelID uint32, userID uint32, speaking bool
 	})
 }
 
+// UDPPort returns the configured UDP audio port from the auth service.
+func (h *Hub) UDPPort() int {
+	if h.authService != nil {
+		return h.authService.UDPPort()
+	}
+	return 7878
+}
+
+

@@ -17,6 +17,7 @@ class VoicePacket {
   final int sequence;
   final int timestamp;
   final Uint8List payload;
+  final Uint8List? rawBytes;
 
   const VoicePacket({
     this.magic = AppConstants.udpMagicByte,
@@ -30,6 +31,7 @@ class VoicePacket {
     required this.sequence,
     required this.timestamp,
     required this.payload,
+    this.rawBytes,
   });
 
   /// Decodes raw datagram buffer into VoicePacket.
@@ -74,6 +76,7 @@ class VoicePacket {
       sequence: sequence,
       timestamp: timestamp,
       payload: payload,
+      rawBytes: data,
     );
   }
 

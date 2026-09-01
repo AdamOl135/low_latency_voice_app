@@ -5,6 +5,7 @@ import (
 	"net"
 	"sync"
 	"testing"
+	"time"
 )
 
 type mockPacketWriter struct {
@@ -340,3 +341,137 @@ func TestRouterSelectiveForwardingPCMFrame(t *testing.T) {
 		}
 	}
 }
+
+func TestRouterPingRefreshesLastSeen(t *testing.T) {
+	writer := newMockPacketWriter()
+	sm := NewSessionManager()
+	router := NewRouter(sm, nil, nil, writer)
+
+	clientAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40001")
+	session := NewSession(101, 1, 1001, clientAddr)
+	// Simulate idle state by backdating LastSeen by 50 seconds
+	staleTime := time.Now().Add(-50 * time.Second)
+	session.LastSeen = staleTime
+	sm.RegisterSession(session)
+
+	pingPkt := &Packet{
+		Magic:      MagicByte,
+		Version:    ProtocolVersion,
+		Type:       TypePing,
+		SenderID:   101,
+		ChannelID:  1,
+		Sequence:   1,
+		Timestamp:  1000,
+		PayloadLen: 0,
+		Payload:    nil,
+	}
+
+	err := router.HandlePacket(pingPkt.Encode(), clientAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket(ping) failed: %v", err)
+	}
+
+	// Verify that LastSeen was refreshed
+	if session.LastSeen.Equal(staleTime) || session.LastSeen.Before(staleTime) {
+		t.Errorf("expected LastSeen to be updated, but was %v (stale was %v)", session.LastSeen, staleTime)
+	}
+	if time.Since(session.LastSeen) > 2*time.Second {
+		t.Errorf("expected LastSeen to be within last 2s, but got %v", time.Since(session.LastSeen))
+	}
+}
+
+func TestSilentListenerPingPreventsScavengerEviction(t *testing.T) {
+	writer := newMockPacketWriter()
+	sm := NewSessionManager()
+	router := NewRouter(sm, nil, nil, writer)
+
+	clientAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40002")
+	session := NewSession(102, 1, 1002, clientAddr)
+	// Backdate LastSeen to 55 seconds ago (close to 60s eviction threshold)
+	session.LastSeen = time.Now().Add(-55 * time.Second)
+	sm.RegisterSession(session)
+
+	if sm.Count() != 1 {
+		t.Fatalf("expected 1 session registered, got %d", sm.Count())
+	}
+
+	// Client sends periodic ping probe
+	pingPkt := &Packet{
+		Magic:      MagicByte,
+		Version:    ProtocolVersion,
+		Type:       TypePing,
+		SenderID:   102,
+		ChannelID:  1,
+		Sequence:   2,
+		Timestamp:  2000,
+		PayloadLen: 0,
+		Payload:    nil,
+	}
+
+	err := router.HandlePacket(pingPkt.Encode(), clientAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket(ping) failed: %v", err)
+	}
+
+	// Run idle session scavenger with 60s idle threshold
+	evicted := sm.CleanStaleSessions(60 * time.Second)
+	if len(evicted) != 0 {
+		t.Errorf("expected 0 evicted sessions after ping refresh, got %d: %v", len(evicted), evicted)
+	}
+
+	if sm.GetByUser(102) == nil {
+		t.Errorf("expected session 102 to remain in SessionManager, but was evicted")
+	}
+
+	// As a sanity check, if LastSeen is older than 60s and no ping arrives, it should be evicted
+	session.LastSeen = time.Now().Add(-65 * time.Second)
+	evictedStale := sm.CleanStaleSessions(60 * time.Second)
+	if len(evictedStale) != 1 || evictedStale[0] != 102 {
+		t.Errorf("expected session 102 to be evicted when stale, got: %v", evictedStale)
+	}
+	if sm.GetByUser(102) != nil {
+		t.Errorf("expected session 102 to be removed after exceeding maxIdle")
+	}
+}
+
+func TestRouterPingRoamingAddrUpdate(t *testing.T) {
+	writer := newMockPacketWriter()
+	sm := NewSessionManager()
+	router := NewRouter(sm, nil, nil, writer)
+
+	oldAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40003")
+	newAddr, _ := net.ResolveUDPAddr("udp", "127.0.0.1:40004")
+
+	session := NewSession(103, 1, 1003, oldAddr)
+	sm.RegisterSession(session)
+
+	// Send ping from new roaming address
+	pingPkt := &Packet{
+		Magic:      MagicByte,
+		Version:    ProtocolVersion,
+		Type:       TypePing,
+		SenderID:   103,
+		ChannelID:  1,
+		Sequence:   3,
+		Timestamp:  3000,
+		PayloadLen: 0,
+		Payload:    nil,
+	}
+
+	err := router.HandlePacket(pingPkt.Encode(), newAddr)
+	if err != nil {
+		t.Fatalf("HandlePacket(ping) failed: %v", err)
+	}
+
+	// Verify session address is updated to newAddr
+	if session.GetAddr().String() != newAddr.String() {
+		t.Errorf("expected session addr %s, got %s", newAddr.String(), session.GetAddr().String())
+	}
+	if sm.GetByAddr(newAddr) != session {
+		t.Errorf("expected session lookup by newAddr to succeed")
+	}
+	if sm.GetByAddr(oldAddr) != nil {
+		t.Errorf("expected old address lookup to return nil")
+	}
+}
+

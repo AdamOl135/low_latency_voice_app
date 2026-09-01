@@ -527,3 +527,81 @@ func TestWS_ModerationActions(t *testing.T) {
 		t.Errorf("expected ok kick_member, got: %+v", kickResp)
 	}
 }
+
+func TestWS_DynamicUDPPortInAuthAndJoinVoice(t *testing.T) {
+	db, err := storage.OpenDB(fmt.Sprintf("file:memctrl_port_%d?mode=memory&cache=shared", time.Now().UnixNano()))
+	if err != nil {
+		t.Fatalf("failed to open test db: %v", err)
+	}
+	repo := storage.NewSQLiteRepository(db)
+	customUDPPort := 9876
+	authSvc := auth.NewAuthService(repo, customUDPPort)
+	hub := NewHub(repo, authSvc)
+	go hub.Run()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ServeWs(hub, w, r)
+	}))
+	defer func() {
+		hub.Close()
+		server.Close()
+		_ = db.Close()
+	}()
+
+	conn := connectWS(t, server.URL)
+	defer conn.Close()
+
+	// 1. Register a user
+	regReq, _ := json.Marshal(map[string]interface{}{
+		"id":       1,
+		"action":   "register",
+		"username": "CustomPortUser",
+		"password": "Password123!",
+	})
+	_ = conn.WriteMessage(websocket.TextMessage, regReq)
+	regResp := readResponse(t, conn, 1, 3*time.Second)
+	if regResp["status"] != "ok" {
+		t.Fatalf("registration failed: %+v", regResp)
+	}
+	token, _ := regResp["token"].(string)
+	portFromReg, ok := regResp["udp_port"].(float64)
+	if !ok || int(portFromReg) != customUDPPort {
+		t.Errorf("expected register udp_port %d, got %v", customUDPPort, regResp["udp_port"])
+	}
+
+	// 2. Auth with token (resuming session)
+	conn2 := connectWS(t, server.URL)
+	defer conn2.Close()
+
+	authReq, _ := json.Marshal(map[string]interface{}{
+		"id":     2,
+		"action": "auth",
+		"token":  token,
+	})
+	_ = conn2.WriteMessage(websocket.TextMessage, authReq)
+	authResp := readResponse(t, conn2, 2, 3*time.Second)
+	if authResp["status"] != "ok" {
+		t.Fatalf("auth failed: %+v", authResp)
+	}
+	portFromAuth, ok := authResp["udp_port"].(float64)
+	if !ok || int(portFromAuth) != customUDPPort {
+		t.Errorf("expected auth udp_port %d, got %v", customUDPPort, authResp["udp_port"])
+	}
+
+	// 3. Join voice channel
+	joinReq, _ := json.Marshal(map[string]interface{}{
+		"id":         3,
+		"action":     "join_voice",
+		"channel_id": 2,
+	})
+	_ = conn2.WriteMessage(websocket.TextMessage, joinReq)
+	joinResp := readResponse(t, conn2, 3, 3*time.Second)
+	if joinResp["status"] != "ok" {
+		t.Fatalf("join_voice failed: %+v", joinResp)
+	}
+	portFromJoin, ok := joinResp["udp_port"].(float64)
+	if !ok || int(portFromJoin) != customUDPPort {
+		t.Errorf("expected join_voice udp_port %d, got %v", customUDPPort, joinResp["udp_port"])
+	}
+}
+
