@@ -7,6 +7,7 @@ import 'package:low_latency_voice_app/services/audio_engine.dart';
 import 'package:low_latency_voice_app/services/ptt_service.dart';
 import 'package:low_latency_voice_app/services/vad_service.dart';
 import 'package:low_latency_voice_app/services/voice_client.dart';
+import 'package:low_latency_voice_app/services/websocket_service.dart';
 
 void main() {
   group('UDP Wire Protocol Serialization Tests', () {
@@ -285,6 +286,53 @@ void main() {
       expect(voiceClient.lastRttMs, equals(0.0));
       await voiceClient.disconnect();
       expect(voiceClient.isConnected, isFalse);
+    });
+  });
+
+  group('WebSocketService Endpoint Parsing & Reconfiguration Tests', () {
+    test('parseEndpoint parses host without scheme or port', () {
+      final res = WebSocketService.parseEndpoint('127.0.0.1', 8085);
+      expect(res.host, equals('127.0.0.1'));
+      expect(res.port, equals(8085));
+    });
+
+    test('parseEndpoint strips http:// and extracts embedded port', () {
+      final res = WebSocketService.parseEndpoint('http://192.168.1.100:9000', 8085);
+      expect(res.host, equals('192.168.1.100'));
+      expect(res.port, equals(9000));
+    });
+
+    test('parseEndpoint strips ws:// and trailing path', () {
+      final res = WebSocketService.parseEndpoint('ws://localhost:8085/ws', 8085);
+      expect(res.host, equals('localhost'));
+      expect(res.port, equals(8085));
+    });
+
+    test('parseEndpoint handles wss:// and https:// schemes', () {
+      final resWs = WebSocketService.parseEndpoint('wss://voice.example.com:443/socket', 8085);
+      expect(resWs.host, equals('voice.example.com'));
+      expect(resWs.port, equals(443));
+
+      final resHttp = WebSocketService.parseEndpoint('https://voice.example.com', 8085);
+      expect(resHttp.host, equals('voice.example.com'));
+      expect(resHttp.port, equals(8085));
+    });
+
+    test('parseEndpoint falls back to defaultHost on empty string', () {
+      final res = WebSocketService.parseEndpoint('   ', 8085);
+      expect(res.host, equals(AppConstants.defaultHost));
+      expect(res.port, equals(8085));
+    });
+
+    test('configure updates host and port cleanly', () {
+      final ws = WebSocketService();
+      expect(ws.host, equals(AppConstants.defaultHost));
+      expect(ws.port, equals(AppConstants.defaultWsPort));
+
+      ws.configure(host: 'http://127.0.0.1:9999');
+      expect(ws.host, equals('127.0.0.1'));
+      expect(ws.port, equals(9999));
+      ws.dispose();
     });
   });
 }

@@ -124,26 +124,31 @@ class SettingsNotifier extends StateNotifier<SettingsState> {
       final vadDb = prefs.getDouble('vad_threshold_db') ?? AppConstants.defaultVadThresholdDb;
       final modeStr = prefs.getString('activation_mode') ?? 'vad';
 
+      final parsed = WebSocketService.parseEndpoint(host, wsPort);
+
       final mode = modeStr == 'ptt' ? InputActivationMode.pushToTalk : InputActivationMode.voiceActivity;
       _vadService.setThreshold(vadDb);
       _pttService.setMode(mode);
-      _ws?.configure(host: host, port: wsPort);
+      _ws?.configure(host: parsed.host, port: parsed.port);
 
       state = state.copyWith(
-        serverHost: host,
-        serverWsPort: wsPort,
+        serverHost: parsed.host,
+        serverWsPort: parsed.port,
         vadThresholdDb: vadDb,
         activationMode: mode,
       );
     } catch (_) {}
   }
 
-  void setServerEndpoint(String host, int wsPort) async {
-    state = state.copyWith(serverHost: host, serverWsPort: wsPort);
-    _ws?.configure(host: host, port: wsPort);
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('server_host', host);
-    await prefs.setInt('server_ws_port', wsPort);
+  Future<void> setServerEndpoint(String host, int wsPort) async {
+    final parsed = WebSocketService.parseEndpoint(host, wsPort);
+    state = state.copyWith(serverHost: parsed.host, serverWsPort: parsed.port);
+    _ws?.configure(host: parsed.host, port: parsed.port);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('server_host', parsed.host);
+      await prefs.setInt('server_ws_port', parsed.port);
+    } catch (_) {}
   }
 
   void setInputDevice(AudioDevice device) {

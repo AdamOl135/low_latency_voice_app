@@ -372,4 +372,64 @@ void main() {
 
     container.dispose();
   });
+
+  testWidgets('Login button with empty username or password shows validation error message', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: VoiceApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Clear username and password
+    final textFields = find.byType(TextField);
+    await tester.enterText(textFields.at(0), '');
+    await tester.enterText(textFields.at(1), '');
+    await tester.pumpAndSettle();
+
+    // Tap Log In button
+    final loginButton = find.widgetWithText(ElevatedButton, 'Log In');
+    expect(loginButton, findsOneWidget);
+    await tester.tap(loginButton);
+    await tester.pumpAndSettle();
+
+    // Expect validation error message to be displayed on screen
+    expect(find.text('Please enter both username and password.'), findsOneWidget);
+  });
+
+  testWidgets('Server settings toggle reveals host/port inputs and helper chips', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 720));
+    await tester.pumpWidget(
+      const ProviderScope(
+        child: VoiceApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Tap server settings dropdown
+    final serverDropdown = find.textContaining('Server:');
+    expect(serverDropdown, findsOneWidget);
+    await tester.tap(serverDropdown);
+    await tester.pumpAndSettle();
+
+    // Expect SERVER HOST and PORT textfields to appear
+    expect(find.text('SERVER HOST'), findsOneWidget);
+    expect(find.text('PORT'), findsOneWidget);
+    expect(find.widgetWithText(ActionChip, 'Localhost'), findsOneWidget);
+    expect(find.widgetWithText(ActionChip, 'Default Server'), findsOneWidget);
+
+    // Tap Localhost chip
+    await tester.tap(find.widgetWithText(ActionChip, 'Localhost'));
+    await tester.pumpAndSettle();
+
+    // Verify Server text reflects 127.0.0.1:8085
+    expect(find.text('Server: 127.0.0.1:8085'), findsOneWidget);
+
+    // Tap Default Server chip
+    await tester.tap(find.widgetWithText(ActionChip, 'Default Server'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Server: ${AppConstants.defaultHost}:${AppConstants.defaultWsPort}'), findsOneWidget);
+  });
 }

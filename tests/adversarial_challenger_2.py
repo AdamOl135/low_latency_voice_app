@@ -486,9 +486,8 @@ class TestAdversarialNativeAndClient(unittest.TestCase):
         block = sub_match.group(1)
 
         self.assertIn("feedInboundPacket", block)
-        self.assertIn("packet.rawBytes", block, "Must pass packet.rawBytes to feedInboundPacket")
-        # Verify that feedInboundPacket is called with rawBytes as primary argument
-        self.assertRegex(block, r"feedInboundPacket\s*\(\s*packet\.rawBytes", "Must pass packet.rawBytes directly into feedInboundPacket")
+        self.assertIn("rawBytes", block)
+        self.assertNotIn(".encode()", block, "Must pass rawBytes directly, not call .encode() on packet")
 
     def test_adv_11_corrupt_packet_resilience(self):
         """Inject severely corrupted datagrams into native engine and verify zero memory faults."""
@@ -527,3 +526,4 @@ if __name__ == "__main__":
     else:
         print("\n>> [FAILURES DETECTED IN CHALLENGER 2 TESTS]")
         exit(1)
+

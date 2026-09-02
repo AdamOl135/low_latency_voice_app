@@ -273,13 +273,11 @@ void* volume_and_controls_worker(void* arg) {
     return NULL;
 }
 
-void* stats_worker(void* arg) {
-    AudioEngineStats stats;
+void* mixer_worker(void* arg) {
+    int16_t output[SAMPLES_PER_FRAME];
     for (int i = 0; i < STRESS_ITERATIONS && g_stress_running; i++) {
-        voice_engine_get_stats(&stats);
-        voice_engine_get_input_level_db();
-        voice_engine_is_mic_test_active();
-        usleep(150);
+        mix_audio_streams(output, SAMPLES_PER_FRAME);
+        usleep(200);
     }
     return NULL;
 }
@@ -309,7 +307,7 @@ void test_high_concurrency_stress(void) {
     pthread_create(&threads[2], NULL, inbound_feed_worker, (void*)(intptr_t)1);
     pthread_create(&threads[3], NULL, inbound_feed_worker, (void*)(intptr_t)2);
     pthread_create(&threads[4], NULL, volume_and_controls_worker, NULL);
-    pthread_create(&threads[5], NULL, stats_worker, NULL);
+    pthread_create(&threads[5], NULL, mixer_worker, NULL);
 
     for (int i = 0; i < NUM_STRESS_THREADS; i++) {
         pthread_join(threads[i], NULL);
@@ -390,3 +388,4 @@ int main(void) {
     printf("================================================================\n");
     return 0;
 }
+

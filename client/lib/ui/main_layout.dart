@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/constants.dart';
 import '../../core/theme.dart';
+import '../../services/websocket_service.dart';
 import '../../state/auth_notifier.dart';
 import '../../state/channels_notifier.dart';
 import '../../state/roster_notifier.dart';
@@ -34,9 +35,15 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
     super.initState();
     // Auto-login or bootstrap session
     WidgetsBinding.instance.addPostFrameCallback((_) async {
-      final settings = ref.read(settingsProvider);
-      _hostController.text = settings.serverHost;
-      _portController.text = '${settings.serverWsPort}';
+      final settingsNotifier = ref.read(settingsProvider.notifier);
+      await settingsNotifier.loadPersistedSettings();
+      if (mounted) {
+        final settings = ref.read(settingsProvider);
+        setState(() {
+          _hostController.text = settings.serverHost;
+          _portController.text = '${settings.serverWsPort}';
+        });
+      }
 
       await ref.read(authProvider.notifier).checkSavedSession();
       if (mounted && ref.read(authProvider).isAuthenticated) {
@@ -58,24 +65,47 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
   void _onLoginOrRegister() async {
     final username = _usernameController.text.trim();
     final password = _passwordController.text.trim();
-    if (username.isEmpty || password.isEmpty) return;
-
-    final host = _hostController.text.trim().isNotEmpty ? _hostController.text.trim() : AppConstants.defaultHost;
-    final port = int.tryParse(_portController.text.trim()) ?? AppConstants.defaultWsPort;
-    ref.read(settingsProvider.notifier).setServerEndpoint(host, port);
-    ref.read(webSocketServiceProvider).configure(host: host, port: port);
-
     final authNotifier = ref.read(authProvider.notifier);
-    bool success;
-    if (_isRegistering) {
-      success = await authNotifier.register(username, password);
-    } else {
-      success = await authNotifier.login(username, password);
+
+    if (username.isEmpty || password.isEmpty) {
+      authNotifier.setErrorMessage('Please enter both username and password.');
+      return;
     }
 
-    if (success) {
-      ref.read(channelsProvider.notifier).fetchChannels();
-      ref.read(rosterProvider.notifier).fetchRoster();
+    final rawHost = _hostController.text.trim().isNotEmpty
+        ? _hostController.text.trim()
+        : AppConstants.defaultHost;
+    final rawPort = int.tryParse(_portController.text.trim()) ?? AppConstants.defaultWsPort;
+
+    final parsed = WebSocketService.parseEndpoint(rawHost, rawPort);
+    _hostController.text = parsed.host;
+    _portController.text = '${parsed.port}';
+
+    await ref.read(settingsProvider.notifier).setServerEndpoint(parsed.host, parsed.port);
+    ref.read(webSocketServiceProvider).configure(host: parsed.host, port: parsed.port);
+
+    try {
+      bool success;
+      if (_isRegistering) {
+        success = await authNotifier.register(username, password);
+      } else {
+        success = await authNotifier.login(username, password);
+      }
+
+      if (success) {
+        ref.read(channelsProvider.notifier).fetchChannels();
+        ref.read(rosterProvider.notifier).fetchRoster();
+      } else {
+        final error = ref.read(authProvider).errorMessage ?? '';
+        if (error.contains('reach voice server') ||
+            error.contains('Could not connect') ||
+            error.contains('WebSocket is not connected')) {
+          if (mounted) setState(() => _showServerSettings = true);
+        }
+      }
+    } catch (e) {
+      authNotifier.setErrorMessage('Login failed: ${e.toString().replaceAll('Exception: ', '')}');
+      if (mounted) setState(() => _showServerSettings = true);
     }
   }
 
@@ -240,7 +270,7 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
                         ),
                         const SizedBox(width: 4),
                         Text(
-                          'Server: ${_hostController.text}:${_portController.text}',
+                          'Server: ${_hostController.text.trim().isEmpty ? AppConstants.defaultHost : _hostController.text.trim()}:${_portController.text.trim().isEmpty ? AppConstants.defaultWsPort : _portController.text.trim()}',
                           style: const TextStyle(color: AppTheme.textMuted, fontSize: 12),
                         ),
                       ],
@@ -255,8 +285,10 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
                         flex: 3,
                         child: TextField(
                           controller: _hostController,
+                          onChanged: (_) => setState(() {}),
                           decoration: const InputDecoration(
                             labelText: 'SERVER HOST',
+                            hintText: '127.0.0.1 or domain',
                             isDense: true,
                           ),
                         ),
@@ -266,11 +298,38 @@ class _MainLayoutState extends ConsumerState<MainLayout> {
                         flex: 2,
                         child: TextField(
                           controller: _portController,
+                          onChanged: (_) => setState(() {}),
                           decoration: const InputDecoration(
                             labelText: 'PORT',
+                            hintText: '8085',
                             isDense: true,
                           ),
                         ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      ActionChip(
+                        label: const Text('Localhost', style: TextStyle(fontSize: 11)),
+                        onPressed: () {
+                          setState(() {
+                            _hostController.text = '127.0.0.1';
+                            _portController.text = '8085';
+                          });
+                        },
+                      ),
+                      const SizedBox(width: 8),
+                      ActionChip(
+                        label: const Text('Default Server', style: TextStyle(fontSize: 11)),
+                        onPressed: () {
+                          setState(() {
+                            _hostController.text = AppConstants.defaultHost;
+                            _portController.text = '${AppConstants.defaultWsPort}';
+                          });
+                        },
                       ),
                     ],
                   ),

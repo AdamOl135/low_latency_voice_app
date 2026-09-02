@@ -96,23 +96,35 @@ class AuthNotifier extends StateNotifier<AuthState> {
     }
   }
 
+  void setErrorMessage(String? message) {
+    state = state.copyWith(errorMessage: message);
+  }
+
   Future<bool> login(String username, String password) async {
     state = state.copyWith(isLoading: true, errorMessage: null);
     try {
-      await _ws.connect();
+      await _ws.connect(force: true);
       final res = await _ws.login(username, password);
       final userData = (res['data'] is Map) ? res['data'] : (res['result'] is Map ? res['result'] : res);
       final user = User.fromJson(Map<String, dynamic>.from(userData as Map));
 
       if (user.token != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('auth_token', user.token!);
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('auth_token', user.token!);
+        } catch (_) {}
       }
 
       state = state.copyWith(isAuthenticated: true, isLoading: false, user: user);
       return true;
     } catch (e) {
-      state = state.copyWith(isLoading: false, errorMessage: e.toString().replaceAll('Exception: ', ''));
+      String msg = e.toString().replaceAll('Exception: ', '').trim();
+      if (msg.contains('Could not connect') ||
+          msg.contains('Connection refused') ||
+          msg.contains('WebSocket is not connected')) {
+        msg = 'Unable to reach voice server at ws://${_ws.host}:${_ws.port}/ws. Please check the Server Host & Port settings or verify the server is running.';
+      }
+      state = state.copyWith(isLoading: false, errorMessage: msg);
       return false;
     }
   }
@@ -120,20 +132,28 @@ class AuthNotifier extends StateNotifier<AuthState> {
   Future<bool> register(String username, String password) async {
     state = state.copyWith(isLoading: true, errorMessage: null);
     try {
-      await _ws.connect();
+      await _ws.connect(force: true);
       final res = await _ws.register(username, password);
       final userData = (res['data'] is Map) ? res['data'] : (res['result'] is Map ? res['result'] : res);
       final user = User.fromJson(Map<String, dynamic>.from(userData as Map));
 
       if (user.token != null) {
-        final prefs = await SharedPreferences.getInstance();
-        await prefs.setString('auth_token', user.token!);
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('auth_token', user.token!);
+        } catch (_) {}
       }
 
       state = state.copyWith(isAuthenticated: true, isLoading: false, user: user);
       return true;
     } catch (e) {
-      state = state.copyWith(isLoading: false, errorMessage: e.toString().replaceAll('Exception: ', ''));
+      String msg = e.toString().replaceAll('Exception: ', '').trim();
+      if (msg.contains('Could not connect') ||
+          msg.contains('Connection refused') ||
+          msg.contains('WebSocket is not connected')) {
+        msg = 'Unable to reach voice server at ws://${_ws.host}:${_ws.port}/ws. Please check the Server Host & Port settings or verify the server is running.';
+      }
+      state = state.copyWith(isLoading: false, errorMessage: msg);
       return false;
     }
   }

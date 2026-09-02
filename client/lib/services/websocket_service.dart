@@ -14,9 +14,12 @@ class WebSocketService {
 
   String _host = AppConstants.defaultHost;
   int _port = AppConstants.defaultWsPort;
+  String get host => _host;
+  int get port => _port;
   String? _sessionToken;
   bool _isDisposed = false;
   int _requestIdCounter = 0;
+  Completer<void>? _connectingCompleter;
 
   WsConnectionStatus _status = WsConnectionStatus.disconnected;
   WsConnectionStatus get status => _status;
@@ -31,23 +34,102 @@ class WebSocketService {
       StreamController<Map<String, dynamic>>.broadcast();
   Stream<Map<String, dynamic>> get eventStream => _eventController.stream;
 
+  /// Sanitizes and parses host and port inputs (supporting schemes, trailing paths, and host:port strings).
+  static ({String host, int port}) parseEndpoint(String rawHost, int defaultPort) {
+    var cleaned = rawHost.trim();
+    if (cleaned.startsWith('ws://')) {
+      cleaned = cleaned.substring(5);
+    } else if (cleaned.startsWith('wss://')) {
+      cleaned = cleaned.substring(6);
+    } else if (cleaned.startsWith('http://')) {
+      cleaned = cleaned.substring(7);
+    } else if (cleaned.startsWith('https://')) {
+      cleaned = cleaned.substring(8);
+    }
+
+    // Strip trailing paths e.g. /ws or /
+    final slashIdx = cleaned.indexOf('/');
+    if (slashIdx != -1) {
+      cleaned = cleaned.substring(0, slashIdx);
+    }
+
+    var port = defaultPort;
+    final colonIdx = cleaned.lastIndexOf(':');
+    if (colonIdx != -1 && !cleaned.contains(']')) {
+      final portPart = cleaned.substring(colonIdx + 1);
+      final parsedPort = int.tryParse(portPart);
+      if (parsedPort != null) {
+        port = parsedPort;
+        cleaned = cleaned.substring(0, colonIdx);
+      }
+    } else if (cleaned.startsWith('[') && cleaned.contains(']:')) {
+      final closeBracket = cleaned.indexOf(']:');
+      final portPart = cleaned.substring(closeBracket + 2);
+      final parsedPort = int.tryParse(portPart);
+      if (parsedPort != null) {
+        port = parsedPort;
+        cleaned = cleaned.substring(0, closeBracket + 1);
+      }
+    }
+
+    if (cleaned.isEmpty) {
+      cleaned = AppConstants.defaultHost;
+    }
+
+    return (host: cleaned, port: port);
+  }
+
   void configure({String? host, int? port, String? token}) {
-    if (host != null) _host = host;
-    if (port != null) _port = port;
     if (token != null) _sessionToken = token;
+    if (host != null || port != null) {
+      final parsed = parseEndpoint(host ?? _host, port ?? _port);
+      final changed = (parsed.host != _host || parsed.port != _port);
+      _host = parsed.host;
+      _port = parsed.port;
+      if (changed) {
+        disconnect();
+      }
+    }
   }
 
   /// Connects to the backend WebSocket server.
-  Future<void> connect({String? host, int? port}) async {
-    if (host != null) _host = host;
-    if (port != null) _port = port;
-
-    if (_status == WsConnectionStatus.connected ||
-        _status == WsConnectionStatus.authenticated ||
-        _status == WsConnectionStatus.connecting) {
-      return;
+  /// If [force] is true, closes existing connections and starts a fresh handshake.
+  Future<void> connect({String? host, int? port, bool force = false}) async {
+    if (host != null || port != null) {
+      final parsed = parseEndpoint(host ?? _host, port ?? _port);
+      final changed = (parsed.host != _host || parsed.port != _port);
+      _host = parsed.host;
+      _port = parsed.port;
+      if (changed) {
+        force = true;
+      }
     }
 
+    if (force) {
+      disconnect();
+    } else {
+      if (_status == WsConnectionStatus.connected ||
+          _status == WsConnectionStatus.authenticated) {
+        return;
+      }
+
+      if (_status == WsConnectionStatus.connecting) {
+        // Await the active in-flight connection attempt
+        if (_connectingCompleter != null) {
+          try {
+            await _connectingCompleter!.future;
+            return;
+          } catch (_) {
+            // If the in-flight connection failed, continue below to retry
+          }
+        } else {
+          return;
+        }
+      }
+    }
+
+    final completer = Completer<void>();
+    _connectingCompleter = completer;
     _updateStatus(WsConnectionStatus.connecting);
 
     try {
@@ -66,13 +148,24 @@ class WebSocketService {
         cancelOnError: true,
       );
 
+      if (!completer.isCompleted) {
+        completer.complete();
+      }
+
       // Auto-authenticate if session token exists
       if (_sessionToken != null && _sessionToken!.isNotEmpty) {
         await authenticate(_sessionToken!);
       }
     } catch (e) {
+      if (!completer.isCompleted) {
+        completer.completeError(e);
+      }
       _onError(e);
       throw Exception('Could not connect to WebSocket at ws://$_host:$_port/ws. Please verify the server is running.');
+    } finally {
+      if (_connectingCompleter == completer) {
+        _connectingCompleter = null;
+      }
     }
   }
 
@@ -142,11 +235,17 @@ class WebSocketService {
 
   void _cleanupConnection() {
     _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
     _subscription?.cancel();
     _subscription = null;
     _channel?.sink.close();
     _channel = null;
     _updateStatus(WsConnectionStatus.disconnected);
+
+    if (_connectingCompleter != null && !_connectingCompleter!.isCompleted) {
+      _connectingCompleter!.completeError(Exception('WebSocket connection closed'));
+    }
+    _connectingCompleter = null;
 
     // Reject all pending requests
     for (final completer in _pendingRequests.values) {
@@ -376,6 +475,7 @@ class WebSocketService {
 
   void disconnect() {
     _reconnectTimer?.cancel();
+    _reconnectTimer = null;
     _cleanupConnection();
   }
 
